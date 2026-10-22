@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>统计结果 - 问卷系统</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">问卷<span>系统</span></div>
+    <nav>
+      <a class="small" href="/dashboard.html">← 我的问卷</a>
+      <button class="secondary small" id="logoutBtn">退出</button>
+    </nav>
+  </header>
+
+  <main class="container">
+    <div class="row between" style="margin-bottom:16px">
+      <div>
+        <h1 id="title">统计结果</h1>
+        <p class="subtitle" style="margin:0" id="subtitle">正在加载...</p>
+      </div>
+      <span class="badge" id="statusBadge"></span>
+    </div>
+
+    <div class="card" id="summaryCard" style="display:none">
+      <div class="grid-3">
+        <div><div class="small muted">总答卷数</div><div style="font-size:28px;font-weight:700" id="totalResponses">0</div></div>
+        <div><div class="small muted">题目数</div><div style="font-size:28px;font-weight:700" id="questionCount">0</div></div>
+        <div><div class="small muted">查看范围</div><div style="font-size:20px;font-weight:600" id="scope">全部题目</div></div>
+      </div>
+    </div>
+
+    <div id="filterBar" style="display:none;margin-bottom:12px">
+      <a class="btn secondary small" id="showAll" href="/stats.html">查看全部题目</a>
+    </div>
+
+    <div id="stats"></div>
+    <div id="empty" class="card empty" style="display:none">还没有答卷。发布问卷并收集回答后，这里会自动生成统计。</div>
+    <p class="error-text" id="error"></p>
+  </main>
+
+  <script src="/js/common.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      const {
+        api, requireAuth, logout, escapeHtml, statusLabel
+      } = window.SurveyApp;
+
+      if (!requireAuth()) return;
+
+      const params = new URLSearchParams(location.search);
+      const surveyId = params.get('id');
+      const onlyQid = params.get('qid');
+      if (!surveyId) {
+        location.replace('/dashboard.html');
+        return;
+      }
+
+      const els = {
+        title: document.getElementById('title'),
+        subtitle: document.getElementById('subtitle'),
+        statusBadge: document.getElementById('statusBadge'),
+        summaryCard: document.getElementById('summaryCard'),
+        totalResponses: document.getElementById('totalResponses'),
+        questionCount: document.getElementById('questionCount'),
+        scope: document.getElementById('scope'),
+        filterBar: document.getElementById('filterBar'),
+        showAll: document.getElementById('showAll'),
+        stats: document.getElementById('stats'),
+        empty: document.getElementById('empty'),
+        error: document.getElementById('error')
+      };
+
+      async function load() {
+        try {
+          const query = onlyQid ? '?qid=' + encodeURIComponent(onlyQid) : '';
+          const data = await api('/api/surveys/' + encodeURIComponent(surveyId) + '/stats' + query);
+          render(data);
+        } catch (err) {
+          if (err.status === 401) return location.replace('/login.html');
+          els.error.textContent = err.message;
+          els.subtitle.textContent = '加载失败';
+        }
+      }
+
+      function render(data) {
+        els.title.textContent = '统计：' + data.title;
+        els.subtitle.textContent = '数据由已提交答卷实时聚合；刷新页面即可看到最新结果。';
+        els.statusBadge.textContent = statusLabel(data.status);
+        els.statusBadge.className = 'badge ' + data.status;
+        els.summaryCard.style.display = 'block';
+        els.totalResponses.textContent = data.totalResponses;
+        els.questionCount.textContent = data.questions.length;
+        els.scope.textContent = onlyQid ? '单题' : '全部题目';
+        els.filterBar.style.display = onlyQid ? 'block' : 'none';
+        els.showAll.href = '/stats.html?id=' + encodeURIComponent(surveyId);
+
+        els.stats.innerHTML = '';
+        if (data.totalResponses === 0) {
+          els.empty.style.display = 'block';
+        } else {
+          els.empty.style.display = 'none';
+        }
+
+        data.questions.forEach((q) => {
+          els.stats.appendChild(renderQuestion(q, data.totalResponses));
+        });
+      }
+
+      function renderQuestion(q, totalResponses) {
+        const card = document.createElement('section');
+        card.className = 'card';
+
+        const head = document.createElement('div');
+        head.className = 'row between';
+        head.innerHTML = `
+          <div>
+            <h2 style="margin:0">${escapeHtml(q.title)}</h2>
+            <div class="small muted">
+              ${escapeHtml({ single: '单选题', multi: '多选题', text: '文本填空', number: '数字填空' }[q.type] || q.type)}
+              · 回答 ${q.totalAnswers} / ${totalResponses} 份
+              ${q.required ? ' · 必答' : ''}
+            </div>
+          </div>
+          <a class="btn secondary small" href="/stats.html?id=${encodeURIComponent(surveyId)}&qid=${encodeURIComponent(q.qid)}">只看本题</a>
+        `;
+        card.appendChild(head);
+
+        if (q.type === 'single' || q.type === 'multi') {
+          const box = document.createElement('div');
+          box.style.marginTop = '14px';
+          q.options.forEach((option) => {
+            const row = document.createElement('div');
+            row.className = 'stat-row';
+            const width = Math.max(0, Math.min(100, option.percent));
+            row.innerHTML = `
+              <div class="stat-label">
+                <span>${escapeHtml(option.label)} <span class="small muted">(${escapeHtml(option.key)})</span></span>
+                <span><b>${option.count}</b> 人 · ${option.percent}%</span>
+              </div>
+              <div class="bar"><span style="width:${width}%"></span></div>
+            `;
+            box.appendChild(row);
+          });
+          if (q.type === 'multi') {
+            const tip = document.createElement('p');
+            tip.className = 'small muted';
+            tip.textContent = '多选百分比 = 选择该选项的人数 / 回答该题的人数，合计可能超过 100%。';
+            box.appendChild(tip);
+          }
+          card.appendChild(box);
+          return card;
+        }
+
+        if (q.type === 'number') {
+          const box = document.createElement('div');
+          box.style.marginTop = '14px';
+          box.innerHTML = `
+            <div class="grid-3">
+              <div class="card flat" style="margin:0"><div class="small muted">平均值</div><div style="font-size:26px;font-weight:700">${q.average == null ? '—' : q.average}</div></div>
+              <div class="card flat" style="margin:0"><div class="small muted">最小值</div><div style="font-size:26px;font-weight:700">${q.min == null ? '—' : q.min}</div></div>
+              <div class="card flat" style="margin:0"><div class="small muted">最大值</div><div style="font-size:26px;font-weight:700">${q.max == null ? '—' : q.max}</div></div>
+            </div>
+            <p class="small muted" style="margin:12px 0 6px">全部填写值（${q.values.length} 个）</p>
+            <div class="answer-list">${q.values.length ? q.values.map((v) => '<span class="mono">' + escapeHtml(v) + '</span>').join('，') : '（无）'}</div>
+          `;
+          card.appendChild(box);
+          return card;
+        }
+
+        const values = q.values || [];
+        const box = document.createElement('div');
+        box.style.marginTop = '14px';
+        box.innerHTML = values.length
+          ? '<ol class="answer-list">' + values.map((v) => '<li>' + escapeHtml(v) + '</li>').join('') + '</ol>'
+          : '<p class="muted">（无填写内容）</p>';
+        card.appendChild(box);
+        return card;
+      }
+
+      document.getElementById('logoutBtn').addEventListener('click', logout);
+      load();
+    })();
+  </script>
+</body>
+</html>

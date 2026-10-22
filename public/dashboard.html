@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>我的问卷 - 问卷系统</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">问卷<span>系统</span></div>
+    <nav>
+      <span class="small muted" id="who"></span>
+      <a class="btn small" href="/edit.html">+ 新建问卷</a>
+      <button class="secondary small" id="logoutBtn">退出</button>
+    </nav>
+  </header>
+
+  <main class="container">
+    <div class="row between" style="margin-bottom:18px">
+      <div>
+        <h1>我的问卷</h1>
+        <p class="subtitle" style="margin:0">只显示当前账号创建的问卷。发布后把链接发给填写者即可。</p>
+      </div>
+    </div>
+
+    <div id="loading" class="card empty">正在加载...</div>
+    <div id="list" class="survey-list"></div>
+    <div id="empty" class="card empty" style="display:none">
+      <p>还没有问卷。</p>
+      <a class="btn" href="/edit.html">创建第一份问卷</a>
+    </div>
+    <p class="error-text" id="error"></p>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      const {
+        api, requireAuth, logout, formatDate, statusLabel,
+        escapeHtml, copyText
+      } = window.SurveyApp;
+
+      if (!requireAuth()) return;
+
+      const listEl = document.getElementById('list');
+      const emptyEl = document.getElementById('empty');
+      const loadingEl = document.getElementById('loading');
+      const errorEl = document.getElementById('error');
+      const toastEl = document.getElementById('toast');
+      let toastTimer = null;
+
+      function toast(message) {
+        toastEl.textContent = message;
+        toastEl.classList.add('show');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2200);
+      }
+
+      async function loadMe() {
+        try {
+          const data = await api('/api/auth/me');
+          document.getElementById('who').textContent = '你好，' + data.user.username;
+        } catch {
+          location.replace('/login.html');
+        }
+      }
+
+      async function load() {
+        errorEl.textContent = '';
+        try {
+          const list = await api('/api/surveys');
+          loadingEl.style.display = 'none';
+          render(list);
+        } catch (err) {
+          loadingEl.style.display = 'none';
+          if (err.status === 401) {
+            location.replace('/login.html');
+            return;
+          }
+          errorEl.textContent = err.message;
+        }
+      }
+
+      function render(list) {
+        listEl.innerHTML = '';
+        emptyEl.style.display = list.length === 0 ? 'block' : 'none';
+
+        list.forEach((s) => {
+          const item = document.createElement('article');
+          item.className = 'survey-item';
+          const deadline = s.deadline ? '截止：' + formatDate(s.deadline) : '未设置截止时间';
+          item.innerHTML = `
+            <div>
+              <h3>${escapeHtml(s.title)}</h3>
+              <div class="row small muted">
+                <span class="badge ${escapeHtml(s.status)}">${escapeHtml(statusLabel(s.status))}</span>
+                <span>${s.responseCount || 0} 份答卷</span>
+                <span>${escapeHtml(deadline)}</span>
+              </div>
+              <div class="small mono muted" style="margin-top:4px">${escapeHtml(s.shareCode || '')}</div>
+            </div>
+            <div class="actions"></div>
+          `;
+          const actions = item.querySelector('.actions');
+
+          if (s.status === 'draft') {
+            actions.appendChild(button('编辑题目', () => {
+              location.href = '/edit.html?id=' + encodeURIComponent(s._id);
+            }, 'secondary'));
+            actions.appendChild(button('发布', () => publish(s), 'primary'));
+          } else {
+            actions.appendChild(button('查看/编辑说明', () => {
+              location.href = '/edit.html?id=' + encodeURIComponent(s._id);
+            }, 'secondary'));
+          }
+
+          if (s.status === 'published') {
+            actions.appendChild(button('复制填写链接', async () => {
+              const ok = await copyText(location.origin + '/survey/' + s.shareCode);
+              toast(ok ? '填写链接已复制' : '复制失败，请手动复制');
+            }, 'secondary'));
+            actions.appendChild(button('关闭', () => closeSurvey(s), 'danger'));
+          }
+
+          actions.appendChild(button('统计结果', () => {
+            location.href = '/stats.html?id=' + encodeURIComponent(s._id);
+          }, 'secondary'));
+
+          if (s.status === 'draft') {
+            actions.appendChild(button('删除草稿', () => removeDraft(s), 'danger'));
+          }
+
+          listEl.appendChild(item);
+        });
+      }
+
+      function button(text, handler, kind) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = text;
+        b.className = 'small ' + (kind || '');
+        b.addEventListener('click', handler);
+        return b;
+      }
+
+      async function publish(s) {
+        if (!confirm('发布后题目结构将被锁定，确定发布「' + s.title + '」吗？')) return;
+        try {
+          const data = await api('/api/surveys/' + s._id + '/publish', { method: 'POST' });
+          const ok = await copyText(data.publicUrl || (location.origin + '/survey/' + data.shareCode));
+          alert('发布成功。\n填写链接：' + (data.publicUrl || data.url) +
+            (ok ? '\n链接已复制到剪贴板。' : ''));
+          load();
+        } catch (err) {
+          errorEl.textContent = err.message;
+        }
+      }
+
+      async function closeSurvey(s) {
+        if (!confirm('关闭后填写者将无法继续提交，确定关闭吗？')) return;
+        try {
+          await api('/api/surveys/' + s._id + '/close', { method: 'POST' });
+          toast('问卷已关闭');
+          load();
+        } catch (err) {
+          errorEl.textContent = err.message;
+        }
+      }
+
+      async function removeDraft(s) {
+        if (!confirm('确定删除草稿「' + s.title + '」吗？此操作不可恢复。')) return;
+        try {
+          await api('/api/surveys/' + s._id, { method: 'DELETE' });
+          toast('草稿已删除');
+          load();
+        } catch (err) {
+          errorEl.textContent = err.message;
+        }
+      }
+
+      document.getElementById('logoutBtn').addEventListener('click', logout);
+      loadMe();
+      load();
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,788 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>编辑问卷 - 问卷系统</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">问卷<span>系统</span></div>
+    <nav>
+      <a class="small" href="/dashboard.html">← 我的问卷</a>
+      <button class="secondary small" id="logoutBtn">退出</button>
+    </nav>
+  </header>
+
+  <main class="container">
+    <div class="row between" style="margin-bottom:16px">
+      <div>
+        <h1 id="pageTitle">新建问卷</h1>
+        <p class="subtitle" style="margin:0" id="pageHint">先填写基本信息，再添加题目；草稿可以随时保存。</p>
+      </div>
+      <span class="badge draft" id="statusBadge">草稿</span>
+    </div>
+
+    <div class="notice warn" id="lockNotice" style="display:none">
+      问卷已发布，题目结构已锁定（避免历史答卷与题目不一致）。仍可修改标题、说明、匿名设置和截止时间。
+    </div>
+
+    <section class="card">
+      <h2>基本信息</h2>
+      <label class="field">问卷标题 *
+        <input id="title" type="text" maxlength="120" placeholder="例如：2026 春季课程反馈">
+      </label>
+      <label class="field">问卷说明
+        <textarea id="description" maxlength="2000" placeholder="向填写者说明问卷目的、预计用时等"></textarea>
+      </label>
+      <div class="grid-2">
+        <label class="field">截止时间
+          <input id="deadline" type="datetime-local">
+          <span class="hint">留空表示不限制；到期后自动拒绝提交。</span>
+        </label>
+        <div>
+          <label class="choice"><input id="allowAnonymous" type="checkbox"> 允许匿名填写</label>
+          <label class="choice"><input id="allowMultiple" type="checkbox" checked> 允许同一账号重复填写</label>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:8px">
+        <button id="saveBtn" type="button">保存</button>
+        <button id="publishBtn" type="button" class="secondary">发布问卷</button>
+        <a id="openLink" class="btn secondary" target="_blank" rel="noopener" style="display:none">打开填写页</a>
+        <button id="copyBtn" type="button" class="secondary" style="display:none">复制链接</button>
+      </div>
+      <p class="error-text" id="error"></p>
+      <p class="success-text" id="success"></p>
+    </section>
+
+    <section>
+      <div class="row between" style="margin:4px 0 12px">
+        <div>
+          <h2 style="margin:0">题目</h2>
+          <p class="small muted" style="margin:0">题目顺序即展示顺序；跳转目标只能选择后面的题目。</p>
+        </div>
+        <div class="row" id="addBar">
+          <button type="button" class="secondary small" data-add="single">+ 单选题</button>
+          <button type="button" class="secondary small" data-add="multi">+ 多选题</button>
+          <button type="button" class="secondary small" data-add="text">+ 文本填空</button>
+          <button type="button" class="secondary small" data-add="number">+ 数字填空</button>
+        </div>
+      </div>
+
+      <fieldset id="questionsFieldset" style="border:0;padding:0;margin:0;min-width:0">
+        <div id="questions"></div>
+      </fieldset>
+      <div id="noQuestions" class="card empty">还没有题目，点击右上角按钮添加。</div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      const {
+        api, requireAuth, logout, formatDate, statusLabel, copyText
+      } = window.SurveyApp;
+
+      if (!requireAuth()) return;
+
+      const params = new URLSearchParams(location.search);
+      let surveyId = params.get('id');
+      let publicUrl = '';
+      const state = {
+        status: 'draft',
+        questions: [],
+        locked: false
+      };
+
+      const els = {
+        pageTitle: document.getElementById('pageTitle'),
+        pageHint: document.getElementById('pageHint'),
+        statusBadge: document.getElementById('statusBadge'),
+        lockNotice: document.getElementById('lockNotice'),
+        title: document.getElementById('title'),
+        description: document.getElementById('description'),
+        deadline: document.getElementById('deadline'),
+        allowAnonymous: document.getElementById('allowAnonymous'),
+        allowMultiple: document.getElementById('allowMultiple'),
+        saveBtn: document.getElementById('saveBtn'),
+        publishBtn: document.getElementById('publishBtn'),
+        openLink: document.getElementById('openLink'),
+        copyBtn: document.getElementById('copyBtn'),
+        error: document.getElementById('error'),
+        success: document.getElementById('success'),
+        questions: document.getElementById('questions'),
+        questionsFieldset: document.getElementById('questionsFieldset'),
+        noQuestions: document.getElementById('noQuestions'),
+        addBar: document.getElementById('addBar'),
+        toast: document.getElementById('toast')
+      };
+
+      let toastTimer = null;
+      function toast(message) {
+        els.toast.textContent = message;
+        els.toast.classList.add('show');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => els.toast.classList.remove('show'), 2200);
+      }
+
+      function showError(err) {
+        els.success.textContent = '';
+        let message = err && err.message ? err.message : '操作失败';
+        if (err && err.data && Array.isArray(err.data.details)) {
+          message += '\n' + err.data.details.join('\n');
+        }
+        els.error.textContent = message;
+      }
+
+      function showSuccess(message) {
+        els.error.textContent = '';
+        els.success.textContent = message;
+      }
+
+      function toLocalInput(value) {
+        if (!value) return '';
+        const d = new Date(value);
+        if (Number.isNaN(d.getTime())) return '';
+        const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+        return local.toISOString().slice(0, 16);
+      }
+
+      function nullableInt(value) {
+        if (value === '' || value == null) return null;
+        const n = Number(value);
+        return Number.isInteger(n) ? n : null;
+      }
+
+      function nullableNumber(value) {
+        if (value === '' || value == null) return null;
+        const n = Number(value);
+        return Number.isFinite(n) ? n : null;
+      }
+
+      function applyMeta(data) {
+        state.status = data.status || 'draft';
+        state.locked = state.status !== 'draft';
+        els.pageTitle.textContent = surveyId ? '编辑问卷' : '新建问卷';
+        els.pageHint.textContent = state.locked
+          ? '查看和修改问卷说明；题目结构已锁定。'
+          : '先填写基本信息，再添加题目；草稿可以随时保存。';
+        els.statusBadge.textContent = statusLabel(state.status);
+        els.statusBadge.className = 'badge ' + state.status;
+        els.lockNotice.style.display = state.locked ? 'block' : 'none';
+        els.title.value = data.title || '';
+        els.description.value = data.description || '';
+        els.deadline.value = toLocalInput(data.deadline);
+        els.allowAnonymous.checked = data.allowAnonymous === true;
+        els.allowMultiple.checked = data.allowMultiple !== false;
+        els.publishBtn.style.display = state.status === 'draft' ? '' : 'none';
+        els.saveBtn.textContent = state.status === 'draft' ? '保存' : '保存说明修改';
+        els.questionsFieldset.disabled = state.locked;
+
+        if (data.shareCode) {
+          publicUrl = data.publicUrl || (location.origin + '/survey/' + data.shareCode);
+          els.openLink.href = '/survey/' + data.shareCode;
+          els.openLink.style.display = state.status === 'closed' ? 'none' : '';
+          els.copyBtn.style.display = state.status === 'closed' ? 'none' : '';
+        } else {
+          publicUrl = '';
+          els.openLink.style.display = 'none';
+          els.copyBtn.style.display = 'none';
+        }
+
+        [...els.addBar.querySelectorAll('button')].forEach((button) => {
+          button.disabled = state.locked;
+        });
+      }
+
+      async function load() {
+        if (!surveyId) {
+          applyMeta({
+            title: '', description: '', deadline: null,
+            allowAnonymous: false, allowMultiple: true,
+            status: 'draft'
+          });
+          state.questions = [];
+          renderQuestions();
+          return;
+        }
+
+        try {
+          const data = await api('/api/surveys/' + encodeURIComponent(surveyId));
+          state.questions = (data.questions || []).map((q) => normalizeLoadedQuestion(q));
+          applyMeta(data);
+          renderQuestions();
+        } catch (err) {
+          if (err.status === 401) return location.replace('/login.html');
+          showError(err);
+        }
+      }
+
+      function normalizeLoadedQuestion(q) {
+        return {
+          qid: q.qid,
+          type: q.type,
+          title: q.title || '',
+          required: q.required === true,
+          options: (q.options || []).map((o) => ({ key: o.key, label: o.label })),
+          minSelect: q.minSelect ?? null,
+          maxSelect: q.maxSelect ?? null,
+          minLength: q.minLength ?? null,
+          maxLength: q.maxLength ?? null,
+          min: q.min ?? null,
+          max: q.max ?? null,
+          integerOnly: q.integerOnly === true,
+          jumps: (q.jumps || []).map((j) => ({
+            when: Object.assign({}, j.when || {}),
+            goto: j.goto || null
+          }))
+        };
+      }
+
+      function nextQid() {
+        const used = new Set(state.questions.map((q) => q.qid));
+        let n = 1;
+        while (used.has('q' + n)) n += 1;
+        return 'q' + n;
+      }
+
+      function nextOptionKey(q) {
+        const used = new Set(q.options.map((o) => o.key));
+        for (let i = 0; i < 26; i += 1) {
+          const key = String.fromCharCode(65 + i);
+          if (!used.has(key)) return key;
+        }
+        let n = 1;
+        while (used.has('O' + n)) n += 1;
+        return 'O' + n;
+      }
+
+      const typeLabels = { single: '单选题', multi: '多选题', text: '文本填空', number: '数字填空' };
+
+      function addQuestion(type) {
+        if (state.locked) return;
+        if (state.questions.length >= 100) {
+          showError(new Error('最多 100 道题'));
+          return;
+        }
+        const q = {
+          qid: nextQid(),
+          type,
+          title: '',
+          required: false,
+          options: (type === 'single' || type === 'multi')
+            ? [{ key: 'A', label: '' }, { key: 'B', label: '' }]
+            : [],
+          minSelect: null,
+          maxSelect: null,
+          minLength: null,
+          maxLength: null,
+          min: null,
+          max: null,
+          integerOnly: false,
+          jumps: []
+        };
+        state.questions.push(q);
+        renderQuestions();
+        const cards = els.questions.querySelectorAll('.question-card');
+        const last = cards[cards.length - 1];
+        if (last) {
+          const input = last.querySelector('input[type="text"]');
+          if (input) input.focus();
+        }
+      }
+
+      function removeQuestion(index) {
+        if (state.locked) return;
+        const q = state.questions[index];
+        if (!confirm('删除第 ' + (index + 1) + ' 题？相关跳转规则也会一并清理。')) return;
+        state.questions.splice(index, 1);
+        state.questions.forEach((item) => {
+          item.jumps = item.jumps.filter((j) => j.goto !== q.qid);
+        });
+        renderQuestions();
+      }
+
+      function renderQuestions() {
+        els.questions.innerHTML = '';
+        els.noQuestions.style.display = state.questions.length ? 'none' : 'block';
+
+        state.questions.forEach((q, index) => {
+          els.questions.appendChild(renderQuestion(q, index));
+        });
+      }
+
+      function renderQuestion(q, index) {
+        const card = document.createElement('div');
+        card.className = 'question-card';
+
+        const head = document.createElement('div');
+        head.className = 'question-head';
+        head.innerHTML = `
+          <div class="qno">${index + 1}</div>
+          <input type="text" maxlength="200" placeholder="请输入题目标题" aria-label="第 ${index + 1} 题标题">
+          <span class="type-tag">${typeLabels[q.type] || q.type}</span>
+          <label class="small muted" style="display:flex;gap:5px;align-items:center;white-space:nowrap">
+            <input type="checkbox" class="required"> 必答
+          </label>
+          <button type="button" class="danger small remove-question">删除题</button>
+        `;
+        const titleInput = head.querySelector('input[type="text"]');
+        titleInput.value = q.title;
+        titleInput.disabled = state.locked;
+        titleInput.addEventListener('input', () => { q.title = titleInput.value; });
+
+        const requiredInput = head.querySelector('.required');
+        requiredInput.checked = q.required;
+        requiredInput.disabled = state.locked;
+        requiredInput.addEventListener('change', () => { q.required = requiredInput.checked; });
+
+        const removeBtn = head.querySelector('.remove-question');
+        removeBtn.disabled = state.locked;
+        removeBtn.addEventListener('click', () => removeQuestion(index));
+        card.appendChild(head);
+
+        if (q.type === 'single' || q.type === 'multi') {
+          card.appendChild(renderOptions(q, index));
+        }
+
+        const constraints = renderConstraints(q);
+        if (constraints) card.appendChild(constraints);
+
+        card.appendChild(renderJumps(q, index));
+        return card;
+      }
+
+      function renderOptions(q, qIndex) {
+        const box = document.createElement('div');
+        box.className = 'opts';
+        const title = document.createElement('div');
+        title.className = 'small muted';
+        title.textContent = '选项（选项编号固定，用于保存答案和统计）';
+        box.appendChild(title);
+
+        q.options.forEach((option, optionIndex) => {
+          const row = document.createElement('div');
+          row.className = 'option-row';
+          const key = document.createElement('div');
+          key.className = 'option-key';
+          key.textContent = option.key;
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.maxLength = 200;
+          input.placeholder = '选项文字';
+          input.value = option.label;
+          input.disabled = state.locked;
+          input.addEventListener('input', () => {
+            option.label = input.value;
+          });
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.className = 'danger small';
+          remove.textContent = '删除';
+          remove.disabled = state.locked || q.options.length <= 2;
+          remove.addEventListener('click', () => {
+            const removedKey = option.key;
+            q.options.splice(optionIndex, 1);
+            q.jumps = q.jumps.filter((j) => {
+              if (j.when && j.when.includes === removedKey) return false;
+              if (j.when && j.when.option === removedKey) return false;
+              if (j.when && j.when.countAtLeast != null && j.when.countAtLeast > q.options.length) return false;
+              if (j.when && j.when.countAtMost != null && j.when.countAtMost > q.options.length) return false;
+              return true;
+            });
+            renderQuestions();
+          });
+          row.appendChild(key);
+          row.appendChild(input);
+          row.appendChild(remove);
+          box.appendChild(row);
+        });
+
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'secondary small';
+        add.textContent = '+ 添加选项';
+        add.disabled = state.locked;
+        add.addEventListener('click', () => {
+          q.options.push({ key: nextOptionKey(q), label: '' });
+          renderQuestions();
+        });
+        box.appendChild(add);
+        return box;
+      }
+
+      function renderConstraints(q) {
+        const box = document.createElement('div');
+        box.className = 'grid-3';
+        box.style.marginTop = '10px';
+
+        function numberField(labelText, value, onChange, placeholder) {
+          const label = document.createElement('label');
+          label.className = 'field small';
+          label.textContent = labelText;
+          const input = document.createElement('input');
+          input.type = 'number';
+          input.value = value == null ? '' : value;
+          input.placeholder = placeholder || '';
+          input.disabled = state.locked;
+          input.addEventListener('input', () => onChange(input.value));
+          label.appendChild(input);
+          return label;
+        }
+
+        if (q.type === 'multi') {
+          box.appendChild(numberField('最少选择数量', q.minSelect, (v) => {
+            q.minSelect = nullableInt(v);
+          }, '不限制'));
+          box.appendChild(numberField('最多选择数量', q.maxSelect, (v) => {
+            q.maxSelect = nullableInt(v);
+          }, '不限制'));
+        } else if (q.type === 'text') {
+          box.appendChild(numberField('最少字数', q.minLength, (v) => {
+            q.minLength = nullableInt(v);
+          }, '不限制'));
+          box.appendChild(numberField('最多字数', q.maxLength, (v) => {
+            q.maxLength = nullableInt(v);
+          }, '不限制'));
+        } else if (q.type === 'number') {
+          box.appendChild(numberField('最小值', q.min, (v) => {
+            q.min = nullableNumber(v);
+          }, '不限制'));
+          box.appendChild(numberField('最大值', q.max, (v) => {
+            q.max = nullableNumber(v);
+          }, '不限制'));
+          const label = document.createElement('label');
+          label.className = 'choice small';
+          label.style.alignSelf = 'end';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = q.integerOnly;
+          cb.disabled = state.locked;
+          cb.addEventListener('change', () => { q.integerOnly = cb.checked; });
+          label.appendChild(cb);
+          label.appendChild(document.createTextNode(' 只允许整数'));
+          box.appendChild(label);
+        } else {
+          return null;
+        }
+        return box;
+      }
+
+      function defaultWhen(q) {
+        if (q.type === 'single') return { option: (q.options[0] || {}).key || '' };
+        if (q.type === 'multi') return { includes: (q.options[0] || {}).key || '' };
+        if (q.type === 'number') return { op: '>=', value: 0 };
+        return {};
+      }
+
+      function renderJumps(q, qIndex) {
+        const box = document.createElement('div');
+        box.className = 'jump-box';
+        const heading = document.createElement('div');
+        heading.className = 'row between';
+        heading.innerHTML = '<b class="small">跳转规则</b><span class="small muted">按顺序匹配第一条；未命中则进入下一题</span>';
+        box.appendChild(heading);
+
+        if (q.type === 'text') {
+          const tip = document.createElement('p');
+          tip.className = 'small muted';
+          tip.style.margin = '6px 0 0';
+          tip.textContent = '文本填空暂不支持按内容跳转。';
+          box.appendChild(tip);
+          return box;
+        }
+
+        q.jumps.forEach((jump, jumpIndex) => {
+          box.appendChild(renderJumpRow(q, qIndex, jump, jumpIndex));
+        });
+
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'secondary small';
+        add.style.marginTop = '8px';
+        add.textContent = '+ 添加跳转规则';
+        add.disabled = state.locked;
+        add.addEventListener('click', () => {
+          q.jumps.push({ when: defaultWhen(q), goto: null });
+          renderQuestions();
+        });
+        box.appendChild(add);
+        return box;
+      }
+
+      function laterQuestions(qIndex) {
+        return state.questions.slice(qIndex + 1);
+      }
+
+      function renderJumpRow(q, qIndex, jump, jumpIndex) {
+        const row = document.createElement('div');
+        row.className = 'jump-row';
+
+        const conditionBox = document.createElement('div');
+        conditionBox.className = 'row';
+
+        if (q.type === 'single') {
+          const select = document.createElement('select');
+          select.disabled = state.locked;
+          q.options.forEach((option) => {
+            const opt = document.createElement('option');
+            opt.value = option.key;
+            opt.textContent = option.key + '：' + (option.label || '(未填写选项文字)');
+            select.appendChild(opt);
+          });
+          select.value = jump.when.option || '';
+          select.addEventListener('change', () => { jump.when = { option: select.value }; });
+          conditionBox.appendChild(document.createTextNode('当选择'));
+          conditionBox.appendChild(select);
+        } else if (q.type === 'multi') {
+          const kind = document.createElement('select');
+          kind.disabled = state.locked;
+          [
+            ['includes', '包含选项'],
+            ['countAtLeast', '至少选择数量'],
+            ['countAtMost', '最多选择数量']
+          ].forEach(([value, label]) => {
+            const opt = document.createElement('option');
+            opt.value = value;
+            opt.textContent = label;
+            kind.appendChild(opt);
+          });
+          const currentKind = Object.prototype.hasOwnProperty.call(jump.when, 'countAtLeast')
+            ? 'countAtLeast'
+            : Object.prototype.hasOwnProperty.call(jump.when, 'countAtMost')
+              ? 'countAtMost'
+              : 'includes';
+          kind.value = currentKind;
+          kind.addEventListener('change', () => {
+            jump.when = kind.value === 'includes'
+              ? { includes: (q.options[0] || {}).key || '' }
+              : kind.value === 'countAtLeast'
+                ? { countAtLeast: 1 }
+                : { countAtMost: Math.max(q.options.length - 1, 0) };
+            renderQuestions();
+          });
+          conditionBox.appendChild(kind);
+
+          if (currentKind === 'includes') {
+            const select = document.createElement('select');
+            select.disabled = state.locked;
+            q.options.forEach((option) => {
+              const opt = document.createElement('option');
+              opt.value = option.key;
+              opt.textContent = option.key + '：' + (option.label || '(未填写选项文字)');
+              select.appendChild(opt);
+            });
+            select.value = jump.when.includes || '';
+            select.addEventListener('change', () => { jump.when = { includes: select.value }; });
+            conditionBox.appendChild(select);
+          } else {
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.min = '0';
+            input.max = String(q.options.length);
+            input.value = jump.when[currentKind] ?? '';
+            input.disabled = state.locked;
+            input.style.width = '90px';
+            input.addEventListener('input', () => {
+              const n = nullableInt(input.value);
+              jump.when = { [currentKind]: n == null ? 0 : n };
+            });
+            conditionBox.appendChild(input);
+          }
+        } else if (q.type === 'number') {
+          const op = document.createElement('select');
+          op.disabled = state.locked;
+          ['>', '>=', '<', '<=', '=='].forEach((value) => {
+            const opt = document.createElement('option');
+            opt.value = value;
+            opt.textContent = value;
+            op.appendChild(opt);
+          });
+          op.value = jump.when.op || '>=';
+          op.addEventListener('change', () => {
+            jump.when = { op: op.value, value: jump.when.value ?? 0 };
+          });
+          const value = document.createElement('input');
+          value.type = 'number';
+          value.value = jump.when.value ?? 0;
+          value.disabled = state.locked;
+          value.style.width = '110px';
+          value.addEventListener('input', () => {
+            const n = nullableNumber(value.value);
+            jump.when = { op: jump.when.op || '>=', value: n == null ? 0 : n };
+          });
+          conditionBox.appendChild(document.createTextNode('当数值'));
+          conditionBox.appendChild(op);
+          conditionBox.appendChild(value);
+        }
+
+        const goto = document.createElement('select');
+        goto.disabled = state.locked;
+        const endOpt = document.createElement('option');
+        endOpt.value = '';
+        endOpt.textContent = '结束问卷';
+        goto.appendChild(endOpt);
+        laterQuestions(qIndex).forEach((target) => {
+          const targetIndex = state.questions.indexOf(target);
+          const opt = document.createElement('option');
+          opt.value = target.qid;
+          opt.textContent = '第 ' + (targetIndex + 1) + ' 题：' + (target.title || '(未命名)');
+          goto.appendChild(opt);
+        });
+        goto.value = jump.goto || '';
+        goto.addEventListener('change', () => { jump.goto = goto.value || null; });
+
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'danger small';
+        remove.textContent = '删除规则';
+        remove.disabled = state.locked;
+        remove.addEventListener('click', () => {
+          q.jumps.splice(jumpIndex, 1);
+          renderQuestions();
+        });
+
+        const gotoWrap = document.createElement('div');
+        gotoWrap.className = 'row';
+        gotoWrap.appendChild(document.createTextNode('→ 跳到'));
+        gotoWrap.appendChild(goto);
+
+        row.appendChild(conditionBox);
+        row.appendChild(gotoWrap);
+        row.appendChild(remove);
+        return row;
+      }
+
+      function buildPayload() {
+        const deadlineValue = els.deadline.value;
+        const payload = {
+          title: els.title.value.trim(),
+          description: els.description.value.trim(),
+          allowAnonymous: els.allowAnonymous.checked,
+          allowMultiple: els.allowMultiple.checked,
+          deadline: deadlineValue ? new Date(deadlineValue).toISOString() : null
+        };
+        if (!state.locked) {
+          payload.questions = state.questions.map((q) => ({
+            qid: q.qid,
+            type: q.type,
+            title: q.title,
+            required: q.required,
+            options: q.options.map((o) => ({ key: o.key, label: o.label })),
+            minSelect: q.minSelect,
+            maxSelect: q.maxSelect,
+            minLength: q.minLength,
+            maxLength: q.maxLength,
+            min: q.min,
+            max: q.max,
+            integerOnly: q.integerOnly,
+            jumps: q.jumps
+          }));
+        }
+        return payload;
+      }
+
+      async function save() {
+        els.error.textContent = '';
+        els.success.textContent = '';
+        els.saveBtn.disabled = true;
+        try {
+          const payload = buildPayload();
+          if (!payload.title) throw new Error('请填写问卷标题');
+          if (!state.locked && state.questions.length === 0) {
+            // 草稿允许 0 题；只有发布才强制至少 1 题。
+          }
+
+          let data;
+          if (!surveyId) {
+            data = await api('/api/surveys', { method: 'POST', body: payload });
+            surveyId = data._id;
+            history.replaceState(null, '', '/edit.html?id=' + encodeURIComponent(surveyId));
+            els.pageTitle.textContent = '编辑问卷';
+          } else {
+            data = await api('/api/surveys/' + encodeURIComponent(surveyId), {
+              method: 'PUT', body: payload
+            });
+          }
+
+          state.status = data.status;
+          state.locked = state.status !== 'draft';
+          if (data.shareCode) {
+            publicUrl = data.publicUrl || (location.origin + '/survey/' + data.shareCode);
+            els.openLink.href = '/survey/' + data.shareCode;
+            els.openLink.style.display = state.status === 'closed' ? 'none' : '';
+            els.copyBtn.style.display = state.status === 'closed' ? 'none' : '';
+          }
+          applyMeta(data);
+          els.success.textContent = '已保存 ' + formatDate(new Date());
+          return data;
+        } catch (err) {
+          if (err.status === 401) {
+            location.replace('/login.html');
+            return null;
+          }
+          showError(err);
+          return null;
+        } finally {
+          els.saveBtn.disabled = false;
+        }
+      }
+
+      async function publish() {
+        const saved = await save();
+        if (!saved) return;
+        if (state.status !== 'draft') {
+          toast(state.status === 'published' ? '问卷已经发布' : '问卷已关闭');
+          return;
+        }
+        els.publishBtn.disabled = true;
+        try {
+          const result = await api('/api/surveys/' + encodeURIComponent(surveyId) + '/publish', {
+            method: 'POST'
+          });
+          state.status = 'published';
+          state.locked = true;
+          publicUrl = result.publicUrl || (location.origin + '/survey/' + result.shareCode);
+          applyMeta({
+            title: els.title.value,
+            description: els.description.value,
+            deadline: els.deadline.value ? new Date(els.deadline.value).toISOString() : null,
+            allowAnonymous: els.allowAnonymous.checked,
+            allowMultiple: els.allowMultiple.checked,
+            status: 'published',
+            shareCode: result.shareCode,
+            publicUrl
+          });
+          renderQuestions();
+          els.success.textContent = '发布成功！填写链接：' + publicUrl;
+          const ok = await copyText(publicUrl);
+          toast(ok ? '链接已复制到剪贴板' : '发布成功，请手动复制链接');
+        } catch (err) {
+          showError(err);
+        } finally {
+          els.publishBtn.disabled = false;
+        }
+      }
+
+      document.getElementById('saveBtn').addEventListener('click', save);
+      document.getElementById('publishBtn').addEventListener('click', publish);
+      document.getElementById('logoutBtn').addEventListener('click', logout);
+      document.getElementById('copyBtn').addEventListener('click', async () => {
+        const ok = await copyText(publicUrl);
+        toast(ok ? '链接已复制' : '复制失败，请手动复制');
+      });
+      els.addBar.addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-add]');
+        if (button) addQuestion(button.dataset.add);
+      });
+
+      load();
+    })();
+  </script>
+</body>
+</html>

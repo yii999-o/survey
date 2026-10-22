@@ -1,0 +1,9 @@
+node_modules/
+.venv/
+.env
+data/
+coverage/
+*.log
+test-output.log
+docs/screenshots/*.tmp.png
+.playwright/

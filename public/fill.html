@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>填写问卷 - 问卷系统</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">问卷<span>系统</span></div>
+    <nav>
+      <a class="small" id="homeLink" href="/dashboard.html">我的问卷</a>
+      <a class="small" id="loginLink" href="/login.html" style="display:none">登录</a>
+    </nav>
+  </header>
+
+  <main class="container narrow">
+    <div id="statePanel" class="card empty">正在加载问卷...</div>
+
+    <div id="surveyPanel" style="display:none">
+      <div class="card">
+        <div class="row between">
+          <span class="badge published">在线问卷</span>
+          <span class="small muted" id="surveyMeta"></span>
+        </div>
+        <h1 id="title" style="margin-top:10px"></h1>
+        <p class="subtitle" id="description"></p>
+        <div class="notice" id="ownerNotice" style="display:none">当前为发布者预览，问卷尚未发布。</div>
+        <div class="row between">
+          <span class="progress" id="progress"></span>
+          <span class="small muted" id="anonHint"></span>
+        </div>
+      </div>
+
+      <div id="loginPrompt" class="card" style="display:none">
+        <h2>需要登录后填写</h2>
+        <p class="muted">该问卷的发布者未开启匿名填写。</p>
+        <a class="btn" id="goLogin" href="/login.html">去登录</a>
+      </div>
+
+      <div id="questions"></div>
+
+      <div class="card" id="submitPanel">
+        <div class="row between">
+          <span class="small muted">提交后会保存一份独立答卷；带 * 的题目为必答题。</span>
+          <button id="submitBtn" type="button">提交问卷</button>
+        </div>
+        <p class="error-text" id="error"></p>
+        <p class="success-text" id="success"></p>
+        <div id="againBox" style="display:none;margin-top:8px">
+          <button class="secondary" id="againBtn" type="button">再填一份</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="/shared/survey-engine.js"></script>
+  <script src="/js/common.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      const { api, getToken, setToken, loginUrl, formatDate } = window.SurveyApp;
+      const Engine = window.SurveyEngine;
+
+      const code = decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || '');
+      const statePanel = document.getElementById('statePanel');
+      const surveyPanel = document.getElementById('surveyPanel');
+      const questionsEl = document.getElementById('questions');
+      const errorEl = document.getElementById('error');
+      const successEl = document.getElementById('success');
+      const progressEl = document.getElementById('progress');
+      const submitBtn = document.getElementById('submitBtn');
+      const loginPrompt = document.getElementById('loginPrompt');
+      const againBox = document.getElementById('againBox');
+
+      let survey = null;
+      let questions = [];
+      const ansMap = {};
+      const cardByQid = new Map();
+
+      function showFatal(message) {
+        statePanel.className = 'card empty';
+        statePanel.textContent = message;
+        statePanel.style.display = 'block';
+        surveyPanel.style.display = 'none';
+      }
+
+      function setLoginLink() {
+        const link = document.getElementById('goLogin');
+        link.href = loginUrl('/survey/' + code);
+        document.getElementById('loginLink').style.display = getToken() ? 'none' : '';
+        document.getElementById('loginLink').href = loginUrl('/survey/' + code);
+      }
+
+      async function load() {
+        setLoginLink();
+        if (!code) {
+          showFatal('问卷链接不正确');
+          return;
+        }
+        try {
+          const data = await api('/api/surveys/by-code/' + encodeURIComponent(code));
+          survey = data;
+          questions = Engine.sortQuestions(data.questions || []);
+          document.title = data.title + ' - 问卷系统';
+          document.getElementById('title').textContent = data.title;
+          document.getElementById('description').textContent = data.description || '';
+          document.getElementById('description').style.display = data.description ? '' : 'none';
+          document.getElementById('surveyMeta').textContent = data.deadline
+            ? '截止时间：' + formatDate(data.deadline)
+            : '不设截止时间';
+          document.getElementById('ownerNotice').style.display = data.isOwnerPreview ? 'block' : 'none';
+          document.getElementById('anonHint').textContent = data.allowAnonymous
+            ? '支持匿名填写'
+            : '需登录后填写';
+          document.getElementById('homeLink').style.display = getToken() ? '' : 'none';
+
+          statePanel.style.display = 'none';
+          surveyPanel.style.display = 'block';
+          renderQuestions();
+          updateVisibility();
+        } catch (err) {
+          if (err.status === 401) {
+            setToken(null);
+            statePanel.style.display = 'none';
+            surveyPanel.style.display = 'block';
+            document.getElementById('title').textContent = '该问卷需要登录';
+            document.getElementById('loginPrompt').style.display = 'block';
+            document.getElementById('questions').style.display = 'none';
+            document.getElementById('submitPanel').style.display = 'none';
+            document.getElementById('surveyMeta').textContent = '';
+            document.getElementById('homeLink').style.display = 'none';
+            document.getElementById('loginLink').style.display = '';
+            return;
+          }
+          showFatal(err.message || '无法打开问卷');
+        }
+      }
+
+      function renderQuestions() {
+        questionsEl.innerHTML = '';
+        cardByQid.clear();
+
+        questions.forEach((q, index) => {
+          const card = document.createElement('section');
+          card.className = 'card question-card fill-question';
+          card.dataset.qid = q.qid;
+
+          const heading = document.createElement('div');
+          heading.className = 'row between';
+          const title = document.createElement('div');
+          title.className = 'q';
+          title.style.fontWeight = '600';
+          title.textContent = 'Q' + (index + 1) + '. ' + q.title + (q.required ? ' *' : '');
+          if (q.required) title.style.color = 'inherit';
+          heading.appendChild(title);
+
+          const tag = document.createElement('span');
+          tag.className = 'type-tag';
+          tag.textContent = { single: '单选', multi: '多选', text: '填空', number: '数字' }[q.type] || q.type;
+          heading.appendChild(tag);
+          card.appendChild(heading);
+
+          if (q.type === 'single') renderSingle(card, q);
+          else if (q.type === 'multi') renderMulti(card, q);
+          else if (q.type === 'text') renderText(card, q);
+          else if (q.type === 'number') renderNumber(card, q);
+
+          const hint = questionHint(q);
+          if (hint) {
+            const p = document.createElement('p');
+            p.className = 'small muted';
+            p.style.margin = '8px 0 0';
+            p.textContent = hint;
+            card.appendChild(p);
+          }
+
+          questionsEl.appendChild(card);
+          cardByQid.set(q.qid, card);
+        });
+      }
+
+      function renderSingle(card, q) {
+        q.options.forEach((option) => {
+          const label = document.createElement('label');
+          label.className = 'choice';
+          const input = document.createElement('input');
+          input.type = 'radio';
+          input.name = 'q_' + q.qid;
+          input.value = option.key;
+          input.addEventListener('change', () => setAnswer(q.qid, option.key));
+          const text = document.createElement('span');
+          text.textContent = option.label + '（' + option.key + '）';
+          label.appendChild(input);
+          label.appendChild(text);
+          card.appendChild(label);
+        });
+      }
+
+      function renderMulti(card, q) {
+        q.options.forEach((option) => {
+          const label = document.createElement('label');
+          label.className = 'choice';
+          const input = document.createElement('input');
+          input.type = 'checkbox';
+          input.value = option.key;
+          input.addEventListener('change', () => {
+            const current = new Set(Array.isArray(ansMap[q.qid]) ? ansMap[q.qid] : []);
+            if (input.checked) {
+              if (q.maxSelect != null && current.size >= q.maxSelect) {
+                input.checked = false;
+                showInlineError('「' + q.title + '」最多选择 ' + q.maxSelect + ' 个');
+                return;
+              }
+              current.add(option.key);
+            } else {
+              current.delete(option.key);
+            }
+            setAnswer(q.qid, [...current]);
+          });
+          const text = document.createElement('span');
+          text.textContent = option.label + '（' + option.key + '）';
+          label.appendChild(input);
+          label.appendChild(text);
+          card.appendChild(label);
+        });
+      }
+
+      function renderText(card, q) {
+        const textarea = document.createElement('textarea');
+        textarea.rows = 3;
+        textarea.maxLength = q.maxLength != null ? Math.min(q.maxLength, 10000) : 10000;
+        textarea.placeholder = '请输入回答';
+        textarea.addEventListener('input', () => setAnswer(q.qid, textarea.value));
+        card.appendChild(textarea);
+      }
+
+      function renderNumber(card, q) {
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.step = q.integerOnly ? '1' : 'any';
+        if (q.min != null) input.min = String(q.min);
+        if (q.max != null) input.max = String(q.max);
+        input.placeholder = q.integerOnly ? '请输入整数' : '请输入数字';
+        input.addEventListener('input', () => {
+          setAnswer(q.qid, input.value === '' ? null : input.value);
+        });
+        card.appendChild(input);
+      }
+
+      function questionHint(q) {
+        if (q.type === 'multi') {
+          const parts = [];
+          if (q.minSelect != null) parts.push('至少选 ' + q.minSelect + ' 个');
+          if (q.maxSelect != null) parts.push('最多选 ' + q.maxSelect + ' 个');
+          return parts.join('，');
+        }
+        if (q.type === 'text') {
+          const parts = [];
+          if (q.minLength != null) parts.push('最少 ' + q.minLength + ' 字');
+          if (q.maxLength != null) parts.push('最多 ' + q.maxLength + ' 字');
+          return parts.join('，');
+        }
+        if (q.type === 'number') {
+          const parts = [];
+          if (q.min != null) parts.push('最小 ' + q.min);
+          if (q.max != null) parts.push('最大 ' + q.max);
+          if (q.integerOnly) parts.push('只允许整数');
+          return parts.join('，');
+        }
+        return '';
+      }
+
+      function setAnswer(qid, value) {
+        ansMap[qid] = value;
+        errorEl.textContent = '';
+        updateVisibility();
+      }
+
+      function showInlineError(message) {
+        errorEl.textContent = message;
+      }
+
+      function updateVisibility() {
+        if (!survey) return;
+        const walked = Engine.walkPath({ questions }, ansMap);
+        if (walked.error) {
+          showInlineError(walked.error);
+          return;
+        }
+        const visible = new Set(walked.path);
+        cardByQid.forEach((card, qid) => {
+          card.classList.toggle('hidden', !visible.has(qid));
+        });
+        progressEl.textContent = '当前答题路径：' + walked.path.length + ' 题' +
+          (walked.terminated ? '（提前结束）' : '');
+      }
+
+      function buildAnswers(path) {
+        return path
+          .filter((qid) => {
+            const value = ansMap[qid];
+            return !(value === undefined || value === null || value === '' ||
+              (Array.isArray(value) && value.length === 0));
+          })
+          .map((qid) => ({ qid, value: ansMap[qid] }));
+      }
+
+      function validateClient(path) {
+        const byQid = new Map(questions.map((q) => [q.qid, q]));
+        for (const qid of path) {
+          const q = byQid.get(qid);
+          const result = Engine.validateAnswer(q, ansMap[qid]);
+          if (!result.ok) {
+            const card = cardByQid.get(qid);
+            if (card) {
+              card.classList.remove('hidden');
+              card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              const focusable = card.querySelector('input, textarea, select');
+              if (focusable) focusable.focus({ preventScroll: true });
+            }
+            return result.error;
+          }
+        }
+        return null;
+      }
+
+      async function submit() {
+        errorEl.textContent = '';
+        successEl.textContent = '';
+        if (!survey) return;
+        submitBtn.disabled = true;
+        try {
+          const walked = Engine.walkPath({ questions }, ansMap);
+          if (walked.error) throw new Error(walked.error);
+          const clientError = validateClient(walked.path);
+          if (clientError) throw new Error(clientError);
+
+          const answers = buildAnswers(walked.path);
+          const result = await api('/api/responses/' + encodeURIComponent(code), {
+            method: 'POST',
+            body: { answers }
+          });
+          successEl.textContent = '提交成功，感谢填写！答卷编号：' + result.responseId;
+          document.querySelectorAll('#questions input, #questions textarea, #questions select')
+            .forEach((el) => { el.disabled = true; });
+          submitBtn.style.display = 'none';
+          if (survey.allowMultiple) againBox.style.display = 'block';
+        } catch (err) {
+          if (err.status === 401) {
+            setToken(null);
+            loginPrompt.style.display = 'block';
+            document.getElementById('goLogin').href = loginUrl('/survey/' + code);
+            errorEl.textContent = '请先登录后再提交。';
+          } else {
+            errorEl.textContent = err.message || '提交失败';
+          }
+        } finally {
+          submitBtn.disabled = false;
+        }
+      }
+
+      document.getElementById('submitBtn').addEventListener('click', submit);
+      document.getElementById('againBtn').addEventListener('click', () => location.reload());
+      window.addEventListener('beforeunload', (event) => {
+        if (successEl.textContent || !survey) return;
+        const answered = Object.keys(ansMap).some((key) => {
+          const value = ansMap[key];
+          return Array.isArray(value) ? value.length > 0 : value !== '' && value != null;
+        });
+        if (answered) {
+          event.preventDefault();
+          event.returnValue = '';
+        }
+      });
+
+      load();
+    })();
+  </script>
+</body>
+</html>

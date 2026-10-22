@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 / 注册 - 问卷系统</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">问卷<span>系统</span></div>
+  </header>
+
+  <main class="container narrow" style="max-width:430px;margin-top:56px">
+    <div class="card">
+      <h1>登录 / 注册</h1>
+      <p class="subtitle">使用账号创建问卷、查看统计；填写公开问卷时是否登录由发布者设置。</p>
+
+      <form id="authForm" autocomplete="on">
+        <label class="field">用户名
+          <input id="username" name="username" type="text" minlength="3" maxlength="32"
+                 autocomplete="username" placeholder="3-32 个字符" required>
+        </label>
+        <label class="field">密码
+          <input id="password" name="password" type="password" minlength="6" maxlength="128"
+                 autocomplete="current-password" placeholder="至少 6 位" required>
+        </label>
+
+        <div class="row">
+          <button type="submit" id="loginBtn">登录</button>
+          <button type="button" class="secondary" id="registerBtn">注册新账号</button>
+        </div>
+      </form>
+
+      <p class="error-text" id="error"></p>
+      <p class="success-text" id="success"></p>
+    </div>
+    <p class="small muted" style="text-align:center">演示环境：数据保存在本机 MongoDB 的 <span class="mono">survey_app</span> 数据库。</p>
+  </main>
+
+  <script src="/js/common.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      const { api, setToken, getToken, readNext } = window.SurveyApp;
+      const form = document.getElementById('authForm');
+      const errorEl = document.getElementById('error');
+      const loginBtn = document.getElementById('loginBtn');
+      const registerBtn = document.getElementById('registerBtn');
+      const next = readNext();
+
+      // 已有有效 token 时直接进入目标页面；失效 token 会被 /me 清掉。
+      if (getToken()) {
+        api('/api/auth/me').then(() => {
+          location.replace(next);
+        }).catch(() => {
+          setToken(null);
+        });
+      }
+
+      async function submit(mode) {
+        errorEl.textContent = '';
+        loginBtn.disabled = true;
+        registerBtn.disabled = true;
+        try {
+          const username = document.getElementById('username').value.trim();
+          const password = document.getElementById('password').value;
+          if (!username || !password) throw new Error('请填写用户名和密码');
+          const data = await api('/api/auth/' + mode, {
+            method: 'POST',
+            body: { username, password }
+          });
+          setToken(data.token);
+          location.replace(next);
+        } catch (err) {
+          errorEl.textContent = err.message;
+        } finally {
+          loginBtn.disabled = false;
+          registerBtn.disabled = false;
+        }
+      }
+
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        submit('login');
+      });
+      registerBtn.addEventListener('click', () => submit('register'));
+    })();
+  </script>
+</body>
+</html>
