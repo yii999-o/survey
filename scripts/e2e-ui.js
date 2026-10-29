@@ -159,15 +159,41 @@ async function main() {
     await page.screenshot({ path: path.join(shotsDir, '02-stats.png'), fullPage: true });
     console.log('[E2E] 统计页：通过，总答卷数 =', totalText);
 
-    // 3. 新建问卷（编辑页）
+    // 2.1 题目库、版本历史、跨问卷单题统计
+    await page.goto(BASE + '/library.html', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('.question-item', { timeout: 15000 });
+    assert((await page.locator('.question-item').count()) >= 2, '题目库列表题目数量异常');
+    await page.screenshot({ path: path.join(shotsDir, '06-library.png'), fullPage: true });
+
+    const ageItem = page.locator('.question-item:has-text("你的年龄段")').first();
+    await ageItem.locator('button:has-text("历史版本")').click();
+    await page.waitForSelector('.version-item', { timeout: 15000 });
+    assert((await page.locator('.version-item').count()) >= 2, '版本历史为空');
+    await page.locator('#modalClose').click();
+
+    await ageItem.locator('button:has-text("跨问卷统计")').click();
+    await page.waitForURL('**/question-stats.html?id=*', { timeout: 15000 });
+    await page.waitForSelector('#summaryCard', { state: 'visible', timeout: 15000 });
+    const surveyCount = await page.locator('#surveyCount').textContent();
+    assert(Number(surveyCount) >= 2, '跨问卷统计的使用问卷数异常：' + surveyCount);
+    await page.screenshot({ path: path.join(shotsDir, '07-question-stats.png'), fullPage: true });
+    console.log('[E2E] 题目库、版本历史、跨问卷统计：通过');
+
+    // 3. 新建问卷（含从题库添加）
     await page.goto(BASE + '/edit.html', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#title');
     const uniqueTitle = 'UI 自动化问卷 ' + Date.now();
     await page.fill('#title', uniqueTitle);
     await page.fill('#description', '用于验证编辑、发布、锁定题目结构。');
     await page.check('#allowAnonymous');
+
+    await page.click('#fromLibraryBtn');
+    await page.waitForSelector('#libraryBackdrop:not([hidden])', { timeout: 15000 });
+    await page.locator('#libraryList button:has-text("添加")').first().click();
+    await page.waitForSelector('.source-note', { timeout: 15000 });
+
     await page.click('[data-add="single"]');
-    const qCard = page.locator('.question-card').first();
+    const qCard = page.locator('.question-card').last();
     await qCard.locator('input[placeholder="请输入题目标题"]').fill('你愿意推荐本系统吗？');
     const optionInputs = qCard.locator('.option-row input[type="text"]');
     await optionInputs.nth(0).fill('愿意');

@@ -38,10 +38,22 @@ router.post('/:code', authOptional, asyncHandler(async (req, res) => {
     if (previous) throw httpError(409, '该问卷不允许重复填写');
   }
 
+  const questionByQid = new Map(
+    (survey.questions || []).map((q) => [q.qid, q])
+  );
+  const enrichedAnswers = validated.answers.map((answer) => {
+    const q = questionByQid.get(answer.qid);
+    return {
+      ...answer,
+      questionId: q && q.sourceQuestionId ? q.sourceQuestionId : null,
+      questionVersionId: q && q.sourceVersionId ? q.sourceVersionId : null
+    };
+  });
+
   const response = await Response.create({
     surveyId: survey._id,
     respondentId: req.userId || null,
-    answers: validated.answers,
+    answers: enrichedAnswers,
     visitedPath: validated.path
   });
 

@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>跨问卷单题统计 - 问卷系统</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">问卷<span>系统</span></div>
+    <nav>
+      <a class="small" href="/library.html">← 题目库</a>
+      <a class="small" href="/dashboard.html">我的问卷</a>
+      <button class="secondary small" id="logoutBtn">退出</button>
+    </nav>
+  </header>
+
+  <main class="container">
+    <div class="row between" style="margin-bottom:16px">
+      <div>
+        <h1 id="title">跨问卷统计</h1>
+        <p class="subtitle" style="margin:0" id="subtitle">正在加载...</p>
+      </div>
+      <span class="badge" id="typeBadge"></span>
+    </div>
+
+    <div class="card" id="summaryCard" style="display:none">
+      <div class="grid-3">
+        <div><div class="small muted">使用问卷数</div><div class="summary-number" id="surveyCount">0</div></div>
+        <div><div class="small muted">回答该题人数</div><div class="summary-number" id="answeredCount">0</div></div>
+        <div><div class="small muted">版本数</div><div class="summary-number" id="versionCount">0</div></div>
+      </div>
+      <p class="small muted" style="margin:10px 0 0" id="responseHint"></p>
+    </div>
+
+    <div id="overall"></div>
+    <h2 id="versionsTitle" style="margin-top:22px;display:none">按版本拆分</h2>
+    <div id="versions"></div>
+    <h2 id="surveysTitle" style="margin-top:22px;display:none">使用该题的问卷</h2>
+    <div id="surveys"></div>
+    <p class="error-text" id="error"></p>
+  </main>
+
+  <script src="/js/common.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      const {
+        api, requireAuth, logout, escapeHtml, statusLabel, formatDate
+      } = window.SurveyApp;
+      if (!requireAuth()) return;
+
+      const params = new URLSearchParams(location.search);
+      const questionId = params.get('id');
+      if (!questionId) {
+        location.replace('/library.html');
+        return;
+      }
+
+      const TYPE_LABEL = { single: '单选题', multi: '多选题', text: '文本填空', number: '数字填空' };
+      const els = {
+        title: document.getElementById('title'),
+        subtitle: document.getElementById('subtitle'),
+        typeBadge: document.getElementById('typeBadge'),
+        summaryCard: document.getElementById('summaryCard'),
+        surveyCount: document.getElementById('surveyCount'),
+        answeredCount: document.getElementById('answeredCount'),
+        versionCount: document.getElementById('versionCount'),
+        responseHint: document.getElementById('responseHint'),
+        overall: document.getElementById('overall'),
+        versionsTitle: document.getElementById('versionsTitle'),
+        versions: document.getElementById('versions'),
+        surveysTitle: document.getElementById('surveysTitle'),
+        surveys: document.getElementById('surveys'),
+        error: document.getElementById('error')
+      };
+      document.getElementById('logoutBtn').addEventListener('click', logout);
+
+      async function load() {
+        try {
+          const [detail, stats] = await Promise.all([
+            api('/api/questions/' + encodeURIComponent(questionId)),
+            api('/api/questions/' + encodeURIComponent(questionId) + '/stats')
+          ]);
+          render(detail, stats);
+        } catch (err) {
+          els.subtitle.textContent = '加载失败';
+          els.error.textContent = err.message;
+        }
+      }
+
+      function render(detail, data) {
+        els.title.textContent = '统计：' + data.question.title;
+        els.subtitle.textContent = '这道题在不同问卷、不同版本中的回答汇总；数据实时聚合。';
+        els.typeBadge.textContent = TYPE_LABEL[data.type] || data.type;
+        els.typeBadge.className = 'badge published';
+        els.summaryCard.style.display = 'block';
+        els.surveyCount.textContent = data.surveyCount;
+        els.answeredCount.textContent = data.answeredResponses;
+        els.versionCount.textContent = data.versionCount;
+        els.responseHint.textContent = '包含使用该题的问卷共 ' + data.totalResponses +
+          ' 份答卷，其中 ' + data.answeredResponses + ' 份回答该题。';
+
+        const overall = document.createElement('section');
+        overall.className = 'card';
+        const h = document.createElement('h2');
+        h.textContent = '总体分布';
+        overall.appendChild(h);
+        overall.appendChild(renderOverall(data));
+        els.overall.innerHTML = '';
+        els.overall.appendChild(overall);
+
+        els.versionsTitle.style.display = data.perVersion.length ? 'block' : 'none';
+        els.versions.innerHTML = '';
+        data.perVersion.forEach((v) => {
+          els.versions.appendChild(renderVersion(v, data));
+        });
+
+        els.surveysTitle.style.display = data.surveys.length ? 'block' : 'none';
+        els.surveys.innerHTML = '';
+        if (data.surveys.length) els.surveys.appendChild(renderSurveys(data.surveys));
+      }
+
+      function renderOverall(data) {
+        const box = document.createElement('div');
+        box.style.marginTop = '12px';
+        if (data.type === 'single' || data.type === 'multi') {
+          data.options.forEach((option) => {
+            const row = document.createElement('div');
+            row.className = 'stat-row';
+            row.innerHTML = `
+              <div class="stat-label">
+                <span>${escapeHtml(option.label)} <span class="small muted">(${escapeHtml(option.key)})</span></span>
+                <span><b>${option.count}</b> 人 · ${option.percent}%</span>
+              </div>
+              <div class="bar"><span style="width:${Math.max(0, Math.min(100, option.percent))}%"></span></div>
+            `;
+            box.appendChild(row);
+          });
+          if (data.type === 'multi') {
+            const tip = document.createElement('p');
+            tip.className = 'small muted';
+            tip.textContent = '多选百分比 = 选择该选项的人数 / 回答该题的人数，合计可能超过 100%。';
+            box.appendChild(tip);
+          }
+          return box;
+        }
+
+        if (data.type === 'number') {
+          box.innerHTML = `
+            <div class="grid-3">
+              <div class="card flat" style="margin:0"><div class="small muted">平均值</div><div class="summary-number">${data.average == null ? '—' : data.average}</div></div>
+              <div class="card flat" style="margin:0"><div class="small muted">最小值</div><div class="summary-number">${data.min == null ? '—' : data.min}</div></div>
+              <div class="card flat" style="margin:0"><div class="small muted">最大值</div><div class="summary-number">${data.max == null ? '—' : data.max}</div></div>
+            </div>
+            <p class="small muted" style="margin:12px 0 6px">全部填写值（${data.values.length} 个）</p>
+            <div class="answer-list">${data.values.length ? data.values.map((v) => '<span class="mono">' + escapeHtml(v) + '</span>').join('，') : '（无）'}</div>
+          `;
+          return box;
+        }
+
+        const values = data.values || [];
+        box.innerHTML = values.length
+          ? '<ol class="answer-list">' + values.map((v) => '<li>' + escapeHtml(v) + '</li>').join('') + '</ol>'
+          : '<p class="muted">（无填写内容）</p>';
+        return box;
+      }
+
+      function renderVersion(v, data) {
+        const card = document.createElement('section');
+        card.className = 'card';
+        const title = document.createElement('div');
+        title.className = 'row between';
+        title.innerHTML = `<h3 style="margin:0">v${v.version} ${escapeHtml(v.title || '')}</h3>
+          <span class="badge">${v.answered} 人回答</span>`;
+        card.appendChild(title);
+        if (v.changeNote) {
+          const note = document.createElement('p');
+          note.className = 'small muted';
+          note.textContent = v.changeNote;
+          card.appendChild(note);
+        }
+        const box = document.createElement('div');
+        box.style.marginTop = '10px';
+        if (data.type === 'single' || data.type === 'multi') {
+          (v.options || data.options || []).forEach((option) => {
+            const count = v.counts[option.key] || 0;
+            const pct = v.answered ? (count / v.answered * 100) : 0;
+            const row = document.createElement('div');
+            row.className = 'stat-row';
+            row.innerHTML = `
+              <div class="stat-label"><span>${escapeHtml(option.label)}</span><span>${count}</span></div>
+              <div class="bar"><span style="width:${Math.max(0, Math.min(100, pct))}%"></span></div>
+            `;
+            box.appendChild(row);
+          });
+        } else if (data.type === 'number') {
+          box.innerHTML = `<div class="small">平均值：<b>${v.average == null ? '—' : v.average}</b>　最小值：${v.min == null ? '—' : v.min}　最大值：${v.max == null ? '—' : v.max}</div>`;
+        } else {
+          box.innerHTML = '<div class="answer-list">' +
+            (v.values.length ? v.values.map((x) => '<div>' + escapeHtml(x) + '</div>').join('') : '（无）') +
+            '</div>';
+        }
+        card.appendChild(box);
+        return card;
+      }
+
+      function renderSurveys(surveys) {
+        const wrap = document.createElement('div');
+        wrap.className = 'card';
+        const table = document.createElement('table');
+        table.className = 'table';
+        table.innerHTML = `
+          <thead><tr><th>问卷</th><th>状态</th><th>题目位置 / 版本</th><th>答卷数</th><th>回答该题</th></tr></thead>
+          <tbody></tbody>
+        `;
+        const tbody = table.querySelector('tbody');
+        surveys.forEach((s) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${escapeHtml(s.title)}</td>
+            <td><span class="badge ${escapeHtml(s.status)}">${escapeHtml(statusLabel(s.status))}</span></td>
+            <td class="small">${s.questions.map((q) => escapeHtml(q.qid) + ' / v' + q.version).join('<br>')}</td>
+            <td>${s.totalResponses}</td>
+            <td>${s.answeredResponses}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+        wrap.appendChild(table);
+        const tip = document.createElement('p');
+        tip.className = 'small muted';
+        tip.style.margin = '10px 0 0';
+        tip.textContent = '只统计题库来源的答案；不同版本按 vN 分开显示。';
+        wrap.appendChild(tip);
+        return wrap;
+      }
+
+      load();
+    })();
+  </script>
+</body>
+</html>

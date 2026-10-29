@@ -1,5 +1,6 @@
 node_modules/
 .venv/
+.pnpm-store/
 .env
 data/
 coverage/
@@ -7,3 +8,8 @@ coverage/
 test-output.log
 docs/screenshots/*.tmp.png
 .playwright/
+
+# 本地为方便查看而生成的重复副本，不作为仓库内容
+/项目完成报告.docx
+/第二阶段项目完成报告.docx
+/提交文档/

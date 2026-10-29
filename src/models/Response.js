@@ -4,14 +4,26 @@ const answerSchema = new mongoose.Schema(
   {
     qid: { type: String, required: true },
     // single: String；multi: [String]；text: String；number: Number
-    value: { type: mongoose.Schema.Types.Mixed, required: true }
+    value: { type: mongoose.Schema.Types.Mixed, required: true },
+    // 第二阶段：题库题的来源信息，用于跨问卷单题统计。
+    // 非题库题为 null，旧答卷也可以继续读取。
+    questionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Question',
+      default: null
+    },
+    questionVersionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'QuestionVersion',
+      default: null
+    }
   },
   { _id: false }
 );
 
 const responseSchema = new mongoose.Schema(
   {
-    schemaVersion: { type: Number, default: 1 },
+    schemaVersion: { type: Number, default: 2 },
     surveyId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Survey',
@@ -38,5 +50,6 @@ const responseSchema = new mongoose.Schema(
 responseSchema.index({ surveyId: 1, submittedAt: -1 });
 responseSchema.index({ surveyId: 1, respondentId: 1 });
 responseSchema.index({ surveyId: 1, 'answers.qid': 1 });
+responseSchema.index({ 'answers.questionId': 1, submittedAt: -1 });
 
 module.exports = mongoose.model('Response', responseSchema);

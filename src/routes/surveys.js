@@ -1,6 +1,10 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const Survey = require('../models/Survey');
 const Response = require('../models/Response');
+const Question = require('../models/Question');
+const QuestionVersion = require('../models/QuestionVersion');
+const QuestionShare = require('../models/QuestionShare');
 const { authRequired, authOptional } = require('../middleware/auth');
 const { validateSurveyDefinition } = require('../services/validation');
 const { computeStats } = require('../services/stats');
@@ -84,6 +88,62 @@ function plainQuestions(survey) {
   return (survey.questions || []).map((q) => (q.toObject ? q.toObject() : q));
 }
 
+/**
+ * 第二阶段：解析题目来源。
+ * 客户端提交的是内容快照 + 来源 ID；服务端重新确认来源题目和版本可访问，
+ * 并把 sourceVersion 固定到版本号。之后题库改版不会改这份快照。
+ */
+async function resolveQuestionSources(userId, questions) {
+  for (const q of questions) {
+    if (!q.sourceQuestionId) {
+      q.sourceQuestionId = null;
+      q.sourceVersionId = null;
+      q.sourceVersion = null;
+      continue;
+    }
+
+    if (!mongoose.isValidObjectId(q.sourceQuestionId)) {
+      throw httpError(400, `题目 ${q.qid} 的来源题目格式错误`);
+    }
+    const source = await Question.findById(q.sourceQuestionId);
+    if (!source) throw httpError(400, `题目 ${q.qid} 的来源题目不存在`);
+    if (source.type !== q.type) {
+      throw httpError(400, `题目 ${q.qid} 的类型与来源题目不一致`);
+    }
+
+    const isOwner = String(source.ownerId) === String(userId);
+    const shared = isOwner ? null : await QuestionShare.exists({
+      questionId: source._id,
+      sharedWithUserId: userId
+    });
+    if (!isOwner && !shared) {
+      throw httpError(403, `没有权限使用题目「${source.title}」`);
+    }
+
+    let version;
+    if (q.sourceVersionId) {
+      if (!mongoose.isValidObjectId(q.sourceVersionId)) {
+        throw httpError(400, `题目 ${q.qid} 的来源版本格式错误`);
+      }
+      version = await QuestionVersion.findOne({
+        _id: q.sourceVersionId,
+        questionId: source._id
+      });
+    } else if (source.currentVersionId) {
+      version = await QuestionVersion.findOne({
+        _id: source.currentVersionId,
+        questionId: source._id
+      });
+    }
+    if (!version) throw httpError(400, `题目 ${q.qid} 的来源版本不存在`);
+
+    q.sourceQuestionId = source._id;
+    q.sourceVersionId = version._id;
+    q.sourceVersion = version.version;
+  }
+  return questions;
+}
+
 function ownerJson(req, survey, extra = {}) {
   const obj = survey.toObject ? survey.toObject() : { ...survey };
   return {
@@ -110,7 +170,10 @@ router.post('/', authRequired, asyncHandler(async (req, res) => {
   const body = req.body || {};
   const meta = parseMeta(body);
   const questions = hasOwn(body, 'questions')
-    ? validateQuestions(body.questions, { allowEmpty: true })
+    ? await resolveQuestionSources(
+      req.userId,
+      validateQuestions(body.questions, { allowEmpty: true })
+    )
     : [];
 
   const survey = await createWithUniqueCode({
@@ -199,7 +262,10 @@ router.put('/:id', authRequired, asyncHandler(async (req, res) => {
   Object.assign(survey, meta);
 
   if (hasOwn(body, 'questions')) {
-    survey.questions = validateQuestions(body.questions, { allowEmpty: true });
+    survey.questions = await resolveQuestionSources(
+      req.userId,
+      validateQuestions(body.questions, { allowEmpty: true })
+    );
   }
 
   // 发布后的元数据修改允许，但结构修改已被上面拒绝。

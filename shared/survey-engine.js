@@ -80,6 +80,10 @@
       min: toNullableNumber(q.min),
       max: toNullableNumber(q.max),
       integerOnly: q.integerOnly === true,
+      // 第二阶段：题库来源信息。普通问卷题保持 null。
+      sourceQuestionId: q.sourceQuestionId || null,
+      sourceVersionId: q.sourceVersionId || null,
+      sourceVersion: q.sourceVersion != null ? Number(q.sourceVersion) : null,
       jumps
     };
   }

@@ -11,6 +11,7 @@
     <div class="brand">问卷<span>系统</span></div>
     <nav>
       <a class="small" href="/dashboard.html">← 我的问卷</a>
+      <a class="small" href="/library.html">题目库</a>
       <button class="secondary small" id="logoutBtn">退出</button>
     </nav>
   </header>
@@ -68,6 +69,7 @@
           <button type="button" class="secondary small" data-add="multi">+ 多选题</button>
           <button type="button" class="secondary small" data-add="text">+ 文本填空</button>
           <button type="button" class="secondary small" data-add="number">+ 数字填空</button>
+          <button type="button" class="secondary small" id="fromLibraryBtn">+ 从题库添加</button>
         </div>
       </div>
 
@@ -77,6 +79,22 @@
       <div id="noQuestions" class="card empty">还没有题目，点击右上角按钮添加。</div>
     </section>
   </main>
+
+  <div class="modal-backdrop" id="libraryBackdrop" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <h2 style="margin:0">从题库添加题目</h2>
+        <button class="ghost" id="libraryClose" type="button">✕</button>
+      </div>
+      <div class="modal-body">
+        <input id="librarySearch" type="text" placeholder="搜索题目" style="margin-bottom:12px">
+        <div id="libraryList" class="stack"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="secondary" id="libraryCancel" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
 
   <div class="toast" id="toast"></div>
 
@@ -119,6 +137,9 @@
         questionsFieldset: document.getElementById('questionsFieldset'),
         noQuestions: document.getElementById('noQuestions'),
         addBar: document.getElementById('addBar'),
+        libraryBackdrop: document.getElementById('libraryBackdrop'),
+        librarySearch: document.getElementById('librarySearch'),
+        libraryList: document.getElementById('libraryList'),
         toast: document.getElementById('toast')
       };
 
@@ -236,6 +257,10 @@
           min: q.min ?? null,
           max: q.max ?? null,
           integerOnly: q.integerOnly === true,
+          sourceQuestionId: q.sourceQuestionId || null,
+          sourceVersionId: q.sourceVersionId || null,
+          sourceVersion: q.sourceVersion ?? null,
+          sourceTitle: q.sourceTitle || '',
           jumps: (q.jumps || []).map((j) => ({
             when: Object.assign({}, j.when || {}),
             goto: j.goto || null
@@ -345,6 +370,16 @@
         removeBtn.disabled = state.locked;
         removeBtn.addEventListener('click', () => removeQuestion(index));
         card.appendChild(head);
+
+        if (q.sourceQuestionId) {
+          const sourceNote = document.createElement('div');
+          sourceNote.className = 'source-note';
+          sourceNote.textContent = '来自题库' +
+            (q.sourceTitle ? '「' + q.sourceTitle + '」' : '') +
+            ' v' + (q.sourceVersion || 1) +
+            '；在本问卷中修改只影响当前问卷快照，不改题库。';
+          card.appendChild(sourceNote);
+        }
 
         if (q.type === 'single' || q.type === 'multi') {
           card.appendChild(renderOptions(q, index));
@@ -681,6 +716,9 @@
             min: q.min,
             max: q.max,
             integerOnly: q.integerOnly,
+            sourceQuestionId: q.sourceQuestionId || null,
+            sourceVersionId: q.sourceVersionId || null,
+            sourceVersion: q.sourceVersion || null,
             jumps: q.jumps
           }));
         }
@@ -768,6 +806,101 @@
           els.publishBtn.disabled = false;
         }
       }
+
+      // ---------- 从题库添加 ----------
+      let libraryItems = [];
+
+      function openLibraryPicker() {
+        if (state.locked) return;
+        els.libraryBackdrop.hidden = false;
+        els.librarySearch.value = '';
+        els.libraryList.innerHTML = '<p class="muted">正在加载题库...</p>';
+        api('/api/questions?scope=all').then((data) => {
+          libraryItems = data.items || [];
+          renderLibraryItems(libraryItems);
+        }).catch((err) => {
+          els.libraryList.textContent = err.message;
+        });
+      }
+
+      function closeLibraryPicker() {
+        els.libraryBackdrop.hidden = true;
+      }
+
+      function renderLibraryItems(items) {
+        els.libraryList.innerHTML = '';
+        if (!items.length) {
+          els.libraryList.innerHTML = '<p class="muted">题库中还没有题目。请先到题目库创建。</p>';
+          return;
+        }
+        items.forEach((item) => {
+          const row = document.createElement('div');
+          row.className = 'version-item row between';
+          const info = document.createElement('div');
+          const type = typeLabels[item.type] || item.type;
+          info.innerHTML = `<b>${escapeHtml(item.title)}</b>
+            <div class="small muted">${escapeHtml(type)} · ${escapeHtml(item.bank ? item.bank.name : '')}
+            · v${item.currentVersion}${item.isShared ? ' · 共享题目' : ''}</div>`;
+          const add = document.createElement('button');
+          add.type = 'button';
+          add.className = 'small';
+          add.textContent = '添加';
+          add.addEventListener('click', () => addLibraryQuestion(item));
+          row.appendChild(info);
+          row.appendChild(add);
+          els.libraryList.appendChild(row);
+        });
+      }
+
+      async function addLibraryQuestion(item) {
+        try {
+          const detail = await api('/api/questions/' + encodeURIComponent(item.id));
+          const v = detail.version;
+          const q = {
+            qid: nextQid(),
+            type: v.type,
+            title: v.title,
+            required: false,
+            options: (v.options || []).map((o) => ({ key: o.key, label: o.label })),
+            minSelect: v.minSelect ?? null,
+            maxSelect: v.maxSelect ?? null,
+            minLength: v.minLength ?? null,
+            maxLength: v.maxLength ?? null,
+            min: v.min ?? null,
+            max: v.max ?? null,
+            integerOnly: v.integerOnly === true,
+            sourceQuestionId: detail.question.id,
+            sourceVersionId: v.id,
+            sourceVersion: v.version,
+            sourceTitle: detail.question.title,
+            jumps: []
+          };
+          state.questions.push(q);
+          closeLibraryPicker();
+          renderQuestions();
+          toast('已从题库添加 v' + v.version);
+        } catch (err) {
+          showError(err);
+        }
+      }
+
+      function escapeHtml(value) {
+        return String(value == null ? '' : value)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      }
+
+      document.getElementById('fromLibraryBtn').addEventListener('click', openLibraryPicker);
+      document.getElementById('libraryClose').addEventListener('click', closeLibraryPicker);
+      document.getElementById('libraryCancel').addEventListener('click', closeLibraryPicker);
+      els.libraryBackdrop.addEventListener('click', (event) => {
+        if (event.target === els.libraryBackdrop) closeLibraryPicker();
+      });
+      els.librarySearch.addEventListener('input', () => {
+        const q = els.librarySearch.value.trim().toLowerCase();
+        renderLibraryItems(libraryItems.filter((item) =>
+          !q || item.title.toLowerCase().includes(q)));
+      });
 
       document.getElementById('saveBtn').addEventListener('click', save);
       document.getElementById('publishBtn').addEventListener('click', publish);

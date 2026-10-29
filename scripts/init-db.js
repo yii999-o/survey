@@ -78,6 +78,9 @@ const validators = {
               min: { bsonType: nullableNumber },
               max: { bsonType: nullableNumber },
               integerOnly: { bsonType: 'bool' },
+              sourceQuestionId: { bsonType: ['objectId', 'null'] },
+              sourceVersionId: { bsonType: ['objectId', 'null'] },
+              sourceVersion: { bsonType: [...numberTypes, 'null'] },
               jumps: {
                 bsonType: 'array',
                 maxItems: 50,
@@ -118,11 +121,105 @@ const validators = {
               qid: { bsonType: 'string', minLength: 1, maxLength: 32 },
               value: {
                 bsonType: ['string', 'int', 'long', 'double', 'decimal', 'bool', 'array']
-              }
+              },
+              questionId: { bsonType: ['objectId', 'null'] },
+              questionVersionId: { bsonType: ['objectId', 'null'] }
             },
             additionalProperties: true
           }
         }
+      },
+      additionalProperties: true
+    }
+  },
+  questionbanks: {
+    $jsonSchema: {
+      bsonType: 'object',
+      required: ['ownerId', 'name', 'isDefault', 'createdAt', 'updatedAt'],
+      properties: {
+        schemaVersion: { bsonType: numberTypes },
+        ownerId: { bsonType: 'objectId' },
+        name: { bsonType: 'string', minLength: 1, maxLength: 60 },
+        description: { bsonType: 'string', maxLength: 500 },
+        isDefault: { bsonType: 'bool' },
+        createdAt: { bsonType: 'date' },
+        updatedAt: { bsonType: 'date' }
+      },
+      additionalProperties: true
+    }
+  },
+  questions: {
+    $jsonSchema: {
+      bsonType: 'object',
+      required: ['ownerId', 'bankId', 'title', 'type', 'currentVersion',
+        'createdAt', 'updatedAt'],
+      properties: {
+        schemaVersion: { bsonType: numberTypes },
+        ownerId: { bsonType: 'objectId' },
+        bankId: { bsonType: 'objectId' },
+        title: { bsonType: 'string', minLength: 1, maxLength: 200 },
+        type: { enum: ['single', 'multi', 'text', 'number'] },
+        currentVersion: { bsonType: numberTypes },
+        currentVersionId: { bsonType: ['objectId', 'null'] },
+        archivedAt: { bsonType: ['date', 'null'] },
+        forkedFromQuestionId: { bsonType: ['objectId', 'null'] },
+        forkedFromVersionId: { bsonType: ['objectId', 'null'] },
+        createdAt: { bsonType: 'date' },
+        updatedAt: { bsonType: 'date' }
+      },
+      additionalProperties: true
+    }
+  },
+  questionversions: {
+    $jsonSchema: {
+      bsonType: 'object',
+      required: ['questionId', 'ownerId', 'version', 'title', 'type', 'createdAt'],
+      properties: {
+        schemaVersion: { bsonType: numberTypes },
+        questionId: { bsonType: 'objectId' },
+        ownerId: { bsonType: 'objectId' },
+        version: { bsonType: numberTypes },
+        title: { bsonType: 'string', minLength: 1, maxLength: 200 },
+        type: { enum: ['single', 'multi', 'text', 'number'] },
+        options: {
+          bsonType: 'array',
+          items: {
+            bsonType: 'object',
+            required: ['key', 'label'],
+            properties: {
+              key: { bsonType: 'string', minLength: 1, maxLength: 32 },
+              label: { bsonType: 'string', minLength: 1, maxLength: 200 }
+            },
+            additionalProperties: true
+          }
+        },
+        minSelect: { bsonType: nullableNumber },
+        maxSelect: { bsonType: nullableNumber },
+        minLength: { bsonType: nullableNumber },
+        maxLength: { bsonType: nullableNumber },
+        min: { bsonType: nullableNumber },
+        max: { bsonType: nullableNumber },
+        integerOnly: { bsonType: 'bool' },
+        parentVersionId: { bsonType: ['objectId', 'null'] },
+        restoredFromVersionId: { bsonType: ['objectId', 'null'] },
+        changeNote: { bsonType: 'string', maxLength: 300 },
+        createdBy: { bsonType: 'objectId' },
+        createdAt: { bsonType: 'date' }
+      },
+      additionalProperties: true
+    }
+  },
+  questionshares: {
+    $jsonSchema: {
+      bsonType: 'object',
+      required: ['questionId', 'ownerId', 'sharedWithUserId', 'permission', 'createdAt'],
+      properties: {
+        schemaVersion: { bsonType: numberTypes },
+        questionId: { bsonType: 'objectId' },
+        ownerId: { bsonType: 'objectId' },
+        sharedWithUserId: { bsonType: 'objectId' },
+        permission: { enum: ['use'] },
+        createdAt: { bsonType: 'date' }
       },
       additionalProperties: true
     }
@@ -162,14 +259,38 @@ async function main() {
   await ensureCollection(db, 'users', validators.users);
   await ensureCollection(db, 'surveys', validators.surveys);
   await ensureCollection(db, 'responses', validators.responses);
+  await ensureCollection(db, 'questionbanks', validators.questionbanks);
+  await ensureCollection(db, 'questions', validators.questions);
+  await ensureCollection(db, 'questionversions', validators.questionversions);
+  await ensureCollection(db, 'questionshares', validators.questionshares);
 
   await db.collection('users').createIndex({ username: 1 }, { unique: true });
   await db.collection('surveys').createIndex({ shareCode: 1 }, { unique: true });
   await db.collection('surveys').createIndex({ ownerId: 1, createdAt: -1 });
   await db.collection('surveys').createIndex({ status: 1, deadline: 1 });
+  await db.collection('surveys').createIndex({ 'questions.sourceQuestionId': 1 });
+  await db.collection('surveys').createIndex({ 'questions.sourceVersionId': 1 });
   await db.collection('responses').createIndex({ surveyId: 1, submittedAt: -1 });
   await db.collection('responses').createIndex({ surveyId: 1, respondentId: 1 });
   await db.collection('responses').createIndex({ surveyId: 1, 'answers.qid': 1 });
+  await db.collection('responses').createIndex({ 'answers.questionId': 1, submittedAt: -1 });
+
+  await db.collection('questionbanks').createIndex({ ownerId: 1, name: 1 }, { unique: true });
+  await db.collection('questionbanks').createIndex(
+    { ownerId: 1, isDefault: 1 },
+    { unique: true, partialFilterExpression: { isDefault: true } }
+  );
+  await db.collection('questions').createIndex({ ownerId: 1, bankId: 1, updatedAt: -1 });
+  await db.collection('questions').createIndex({ title: 'text' });
+  await db.collection('questionversions').createIndex(
+    { questionId: 1, version: 1 },
+    { unique: true }
+  );
+  await db.collection('questionshares').createIndex(
+    { questionId: 1, sharedWithUserId: 1 },
+    { unique: true }
+  );
+  await db.collection('questionshares').createIndex({ sharedWithUserId: 1, createdAt: -1 });
 
   console.log('[DB] 索引创建完成');
   console.log('[DB] 初始化完成，可运行 npm run seed 导入演示数据');

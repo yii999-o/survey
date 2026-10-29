@@ -30,6 +30,8 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/surveys', require('./routes/surveys'));
 app.use('/api/responses', require('./routes/responses'));
+app.use('/api/banks', require('./routes/banks'));
+app.use('/api/questions', require('./routes/questions'));
 
 // 前后端共用的跳转/校验逻辑，浏览器直接加载这一份文件。
 app.use('/shared', express.static(path.join(ROOT, 'shared'), {

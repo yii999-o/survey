@@ -44,6 +44,20 @@ const questionSchema = new mongoose.Schema(
     max: { type: Number, default: null },
     integerOnly: { type: Boolean, default: false },
 
+    // 第二阶段：如果题目来自题库，记录来源题目/版本；内容仍然保存快照，
+    // 因此题库更新不会改变旧问卷。
+    sourceQuestionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Question',
+      default: null
+    },
+    sourceVersionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'QuestionVersion',
+      default: null
+    },
+    sourceVersion: { type: Number, default: null },
+
     jumps: { type: [jumpSchema], default: [] }
   },
   { _id: false }
@@ -51,7 +65,7 @@ const questionSchema = new mongoose.Schema(
 
 const surveySchema = new mongoose.Schema(
   {
-    schemaVersion: { type: Number, default: 1 },
+    schemaVersion: { type: Number, default: 2 },
     ownerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -87,5 +101,8 @@ const surveySchema = new mongoose.Schema(
 surveySchema.index({ shareCode: 1 }, { unique: true });
 surveySchema.index({ ownerId: 1, createdAt: -1 });
 surveySchema.index({ status: 1, deadline: 1 });
+// 题目被哪些问卷使用：多键索引直接查询嵌入数组中的来源题目。
+surveySchema.index({ 'questions.sourceQuestionId': 1 });
+surveySchema.index({ 'questions.sourceVersionId': 1 });
 
 module.exports = mongoose.model('Survey', surveySchema);

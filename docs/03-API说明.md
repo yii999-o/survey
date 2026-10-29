@@ -411,12 +411,59 @@ Invoke-RestMethod -Method Post -Uri "$base/api/responses/democode0001" `
   -ContentType "application/json" -Body $body
 ```
 
-## 3.8 HTTP 状态码
+## 3.8 第二阶段题库 API
+
+完整请求/响应和测试见 [第二阶段 API 文档](09-第二阶段API与测试.md)。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/banks` | 题库列表（自动创建默认题库） |
+| POST | `/api/banks` | 创建题库 |
+| PUT | `/api/banks/:id` | 重命名/修改说明 |
+| DELETE | `/api/banks/:id` | 删除空题库（默认题库不可删） |
+| GET | `/api/questions` | 我的/共享/全部题目；`scope`、`bankId`、`q` |
+| POST | `/api/questions` | 创建题目 v1 |
+| GET | `/api/questions/:id` | 题目详情，可 `?version=1` |
+| PUT | `/api/questions/:id` | 修改并生成新版本（仅所有者） |
+| DELETE | `/api/questions/:id` | 软归档 |
+| GET | `/api/questions/:id/versions` | 版本历史 |
+| GET | `/api/questions/:id/versions/:version` | 指定版本内容 |
+| POST | `/api/questions/:id/restore` | 恢复旧版为新版本 |
+| POST | `/api/questions/:id/fork` | 另存为新题 |
+| POST | `/api/questions/:id/share` | 按用户名共享 |
+| GET | `/api/questions/:id/shares` | 共享列表 |
+| DELETE | `/api/questions/:id/shares/:userId` | 取消共享 |
+| GET | `/api/questions/:id/usage` | 被哪些问卷使用（所有者） |
+| GET | `/api/questions/:id/stats` | 跨问卷单题统计（所有者） |
+
+### 问卷题目的来源字段
+
+`POST/PUT /api/surveys` 的 `questions[]` 可以额外带：
+
+```json
+{
+  "sourceQuestionId": "6712...",
+  "sourceVersionId": "6713...",
+  "sourceVersion": 1
+}
+```
+
+服务端会校验来源题目/版本、当前用户使用权，并把内容快照保存在问卷中。返回的问卷仍包含完整题目字段。
+
+### 答卷的来源字段
+
+`POST /api/responses/:code` 的请求仍只需要 `qid/value`；服务端自动在 `answers[]` 中补：
+
+```json
+{ "questionId": "...", "questionVersionId": "..." }
+```
+
+## 3.9 HTTP 状态码
 
 | 状态码 | 场景 |
 | --- | --- |
 | 200 | 查询/修改/发布/关闭成功 |
-| 201 | 注册、创建问卷、提交答卷成功 |
+| 201 | 注册、创建问卷、创建题目、恢复/另存、提交答卷成功 |
 | 400 | 参数格式错误、题目定义非法、答案校验失败 |
 | 401 | 未登录、token 失效、问卷要求登录 |
 | 403 | 访问未发布问卷（非创建者）、草稿提交 |

@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>题目库 - 问卷系统</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">问卷<span>系统</span></div>
+    <nav>
+      <a class="small" href="/dashboard.html">我的问卷</a>
+      <a class="small" href="/library.html">题目库</a>
+      <span class="small muted" id="who"></span>
+      <button class="secondary small" id="logoutBtn">退出</button>
+    </nav>
+  </header>
+
+  <main class="container wide">
+    <div class="row between" style="margin-bottom:18px">
+      <div>
+        <h1>题目库</h1>
+        <p class="subtitle" style="margin:0">保存题目、共享给同事、查看版本历史，并在新问卷中直接引用。</p>
+      </div>
+      <button id="newQuestionBtn">+ 新建题目</button>
+    </div>
+
+    <div class="library-layout">
+      <aside class="bank-sidebar card flat">
+        <div class="row between" style="margin-bottom:10px">
+          <b>我的题库</b>
+          <button class="ghost small" id="newBankBtn">+ 题库</button>
+        </div>
+        <div id="bankList"></div>
+        <div class="small muted" style="margin-top:12px">共享题目的题库由原创建者维护。</div>
+      </aside>
+
+      <section>
+        <div class="card flat" style="padding:14px">
+          <div class="row between">
+            <div class="row" id="scopeTabs">
+              <button class="small" data-scope="mine">我的题目</button>
+              <button class="secondary small" data-scope="shared">共享给我</button>
+            </div>
+            <div class="row">
+              <input id="searchInput" type="text" placeholder="搜索题目标题" style="width:230px;margin:0">
+            </div>
+          </div>
+        </div>
+
+        <div id="questionList" class="stack" style="margin-top:14px"></div>
+        <div id="emptyState" class="card empty" style="display:none">
+          <p>还没有题目。</p>
+          <button class="secondary" id="emptyCreateBtn">创建第一道题</button>
+        </div>
+        <p class="error-text" id="error"></p>
+      </section>
+    </div>
+  </main>
+
+  <div class="modal-backdrop" id="modalBackdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h2 id="modalTitle" style="margin:0">题目</h2>
+        <button class="ghost" id="modalClose" type="button" aria-label="关闭">✕</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-actions" id="modalActions"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      const {
+        api, requireAuth, logout, escapeHtml, statusLabel, formatDate
+      } = window.SurveyApp;
+      if (!requireAuth()) return;
+
+      const TYPE_LABEL = { single: '单选题', multi: '多选题', text: '文本填空', number: '数字填空' };
+      const state = {
+        scope: 'mine',
+        bankId: null,
+        banks: [],
+        questions: [],
+        current: null,
+        editing: null
+      };
+
+      const els = {
+        bankList: document.getElementById('bankList'),
+        questionList: document.getElementById('questionList'),
+        empty: document.getElementById('emptyState'),
+        search: document.getElementById('searchInput'),
+        scopeTabs: document.getElementById('scopeTabs'),
+        modalBackdrop: document.getElementById('modalBackdrop'),
+        modalTitle: document.getElementById('modalTitle'),
+        modalBody: document.getElementById('modalBody'),
+        modalActions: document.getElementById('modalActions'),
+        error: document.getElementById('error'),
+        toast: document.getElementById('toast')
+      };
+
+      let toastTimer = null;
+      let searchTimer = null;
+      function toast(message) {
+        els.toast.textContent = message;
+        els.toast.classList.add('show');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => els.toast.classList.remove('show'), 2200);
+      }
+
+      function showError(err) {
+        els.error.textContent = err && err.message ? err.message : String(err);
+      }
+
+      function clearError() { els.error.textContent = ''; }
+
+      async function loadMe() {
+        try {
+          const data = await api('/api/auth/me');
+          document.getElementById('who').textContent = '你好，' + data.user.username;
+        } catch {
+          location.replace('/login.html');
+        }
+      }
+
+      async function loadBanks() {
+        const banks = await api('/api/banks');
+        state.banks = banks.map((b) => ({ ...b, id: String(b._id) }));
+        renderBanks();
+      }
+
+      function renderBanks() {
+        els.bankList.innerHTML = '';
+        const all = document.createElement('button');
+        all.type = 'button';
+        all.className = 'bank-item' + (state.bankId === null ? ' active' : '');
+        all.innerHTML = '<span>全部题目</span><span class="muted">' +
+          state.questions.length + '</span>';
+        all.addEventListener('click', () => {
+          state.bankId = null;
+          setScope('mine');
+          loadQuestions();
+          renderBanks();
+        });
+        els.bankList.appendChild(all);
+
+        state.banks.forEach((bank) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'bank-item' + (state.bankId === bank.id ? ' active' : '');
+          button.innerHTML = '<span>' + escapeHtml(bank.name) + '</span>' +
+            '<span class="muted">' + bank.questionCount + '</span>';
+          button.addEventListener('click', () => {
+            state.bankId = bank.id;
+            setScope('mine');
+            loadQuestions();
+            renderBanks();
+          });
+          els.bankList.appendChild(button);
+        });
+      }
+
+      function setScope(scope) {
+        state.scope = scope;
+        if (scope === 'shared') state.bankId = null;
+        [...els.scopeTabs.querySelectorAll('button')].forEach((b) => {
+          const active = b.dataset.scope === scope;
+          b.className = active ? 'small' : 'secondary small';
+        });
+      }
+
+      async function loadQuestions() {
+        clearError();
+        const params = new URLSearchParams();
+        params.set('scope', state.scope);
+        if (state.bankId && state.scope === 'mine') params.set('bankId', state.bankId);
+        const q = els.search.value.trim();
+        if (q) params.set('q', q);
+
+        try {
+          const data = await api('/api/questions?' + params.toString());
+          state.questions = data.items || [];
+          renderQuestions();
+          renderBanks();
+        } catch (err) {
+          showError(err);
+        }
+      }
+
+      function renderQuestions() {
+        els.questionList.innerHTML = '';
+        els.empty.style.display = state.questions.length ? 'none' : 'block';
+        state.questions.forEach((q) => {
+          const card = document.createElement('article');
+          card.className = 'question-item';
+          const badges = [
+            '<span class="badge">' + escapeHtml(TYPE_LABEL[q.type] || q.type) + '</span>',
+            '<span class="badge published">v' + q.currentVersion + '</span>',
+            q.isShared ? '<span class="badge draft">共享</span>' : ''
+          ].join(' ');
+          const owner = q.owner ? '创建者：' + escapeHtml(q.owner.username) : '';
+          const bank = q.bank ? escapeHtml(q.bank.name) : '';
+
+          card.innerHTML = `
+            <div class="question-item-head">
+              <div>
+                <h3>${escapeHtml(q.title)}</h3>
+                <div class="row small muted" style="margin-top:5px">
+                  ${badges}
+                  <span>${bank}</span>
+                  <span>被 ${q.usageCount || 0} 份问卷使用</span>
+                  ${owner}
+                </div>
+              </div>
+              <div class="question-item-actions"></div>
+            </div>
+            <div class="question-preview small muted"></div>
+          `;
+          const preview = card.querySelector('.question-preview');
+          preview.textContent = versionSummary(q.version);
+          const actions = card.querySelector('.question-item-actions');
+
+          if (q.isOwner) {
+            actions.appendChild(button('编辑', () => openEditor(q), 'secondary small'));
+            actions.appendChild(button('历史版本', () => openHistory(q), 'secondary small'));
+            actions.appendChild(button('共享', () => openShare(q), 'secondary small'));
+            actions.appendChild(button('使用情况', () => openUsage(q), 'secondary small'));
+            actions.appendChild(button('跨问卷统计', () => {
+              location.href = '/question-stats.html?id=' + encodeURIComponent(q.id);
+            }, 'secondary small'));
+            actions.appendChild(button('另存为新题', () => forkQuestion(q), 'secondary small'));
+          } else {
+            actions.appendChild(button('查看', () => openPreview(q), 'secondary small'));
+            actions.appendChild(button('历史版本', () => openHistory(q), 'secondary small'));
+            actions.appendChild(button('另存到我的题库', () => forkQuestion(q), 'secondary small'));
+          }
+          els.questionList.appendChild(card);
+        });
+      }
+
+      function button(label, handler, className) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = className || 'secondary small';
+        b.textContent = label;
+        b.addEventListener('click', handler);
+        return b;
+      }
+
+      function versionSummary(v) {
+        if (!v) return '';
+        if (v.type === 'single' || v.type === 'multi') {
+          return (v.options || []).map((o) => o.key + '：' + o.label).join('　');
+        }
+        if (v.type === 'text') {
+          const parts = [];
+          if (v.minLength != null) parts.push('最少 ' + v.minLength + ' 字');
+          if (v.maxLength != null) parts.push('最多 ' + v.maxLength + ' 字');
+          return parts.join('，') || '文本填空';
+        }
+        if (v.type === 'number') {
+          const parts = [];
+          if (v.min != null) parts.push('最小 ' + v.min);
+          if (v.max != null) parts.push('最大 ' + v.max);
+          if (v.integerOnly) parts.push('只允许整数');
+          return parts.join('，') || '数字填空';
+        }
+        return '';
+      }
+
+      // ---------- 通用模态框 ----------
+      function showModal(title, bodyNode, actions) {
+        els.modalTitle.textContent = title;
+        els.modalBody.innerHTML = '';
+        els.modalBody.appendChild(bodyNode);
+        els.modalActions.innerHTML = '';
+        (actions || []).forEach((action) => {
+          const b = button(action.label, action.handler,
+            action.primary ? '' : 'secondary');
+          if (action.primary) b.className = '';
+          els.modalActions.appendChild(b);
+        });
+        els.modalBackdrop.hidden = false;
+      }
+
+      function closeModal() {
+        els.modalBackdrop.hidden = true;
+        els.modalBody.innerHTML = '';
+        els.modalActions.innerHTML = '';
+      }
+
+      els.modalBackdrop.addEventListener('click', (event) => {
+        if (event.target === els.modalBackdrop) closeModal();
+      });
+      document.getElementById('modalClose').addEventListener('click', closeModal);
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !els.modalBackdrop.hidden) closeModal();
+      });
+
+      // ---------- 新建/编辑题目 ----------
+      async function openEditor(q) {
+        clearError();
+        let detail = null;
+        if (q) {
+          try {
+            detail = await api('/api/questions/' + encodeURIComponent(q.id));
+          } catch (err) { showError(err); return; }
+        }
+        const content = detail ? detail.version : {
+          type: 'single', title: '',
+          options: [{ key: 'A', label: '' }, { key: 'B', label: '' }],
+          minSelect: null, maxSelect: null, minLength: null, maxLength: null,
+          min: null, max: null, integerOnly: false
+        };
+        const editing = {
+          id: q ? q.id : null,
+          detail,
+          bankId: q ? (q.bank ? q.bank.id : null) : (state.bankId || (state.banks[0] && state.banks[0].id) || null),
+          typeLocked: Boolean(q),
+          content: JSON.parse(JSON.stringify(content))
+        };
+        state.editing = editing;
+
+        const wrap = document.createElement('div');
+        wrap.className = 'stack';
+        wrap.innerHTML = `
+          <label class="field">题目内容 *
+            <input id="editTitle" type="text" maxlength="200" placeholder="例如：你的年龄">
+          </label>
+          <div class="grid-2">
+            <label class="field">题型
+              <select id="editType">
+                <option value="single">单选题</option>
+                <option value="multi">多选题</option>
+                <option value="text">文本填空</option>
+                <option value="number">数字填空</option>
+              </select>
+            </label>
+            <label class="field">所属题库
+              <select id="editBank"></select>
+            </label>
+          </div>
+          <div id="editOptions"></div>
+          <div id="editConstraints"></div>
+          <label class="field">版本说明
+            <input id="editNote" type="text" maxlength="300"
+              placeholder="${q ? '例如：修改题干' : '例如：创建题目'}">
+          </label>
+          <p class="small muted" style="margin:0">
+            保存修改会生成新版本；已经引用旧版本的问卷不会改变。
+          </p>
+        `;
+        const titleInput = wrap.querySelector('#editTitle');
+        const typeSelect = wrap.querySelector('#editType');
+        const bankSelect = wrap.querySelector('#editBank');
+        titleInput.value = content.title;
+        typeSelect.value = content.type;
+        typeSelect.disabled = editing.typeLocked;
+        state.banks.forEach((bank) => {
+          const opt = document.createElement('option');
+          opt.value = bank.id;
+          opt.textContent = bank.name;
+          bankSelect.appendChild(opt);
+        });
+        bankSelect.value = editing.bankId || '';
+        bankSelect.disabled = Boolean(q);
+
+        const optionsBox = wrap.querySelector('#editOptions');
+        const constraintsBox = wrap.querySelector('#editConstraints');
+
+        function renderContentFields() {
+          optionsBox.innerHTML = '';
+          constraintsBox.innerHTML = '';
+
+          if (editing.content.type === 'single' || editing.content.type === 'multi') {
+            const heading = document.createElement('div');
+            heading.className = 'small muted';
+            heading.textContent = '选项（key 用于保存答案，建议使用 A/B/C）';
+            optionsBox.appendChild(heading);
+            editing.content.options.forEach((option, index) => {
+              const row = document.createElement('div');
+              row.className = 'option-row';
+              row.innerHTML = `<div class="option-key">${escapeHtml(option.key)}</div>`;
+              const label = document.createElement('input');
+              label.type = 'text';
+              label.value = option.label;
+              label.placeholder = '选项文字';
+              label.addEventListener('input', () => { option.label = label.value; });
+              const remove = document.createElement('button');
+              remove.type = 'button';
+              remove.className = 'danger small';
+              remove.textContent = '删除';
+              remove.disabled = editing.content.options.length <= 2;
+              remove.addEventListener('click', () => {
+                editing.content.options.splice(index, 1);
+                renderContentFields();
+              });
+              row.appendChild(label);
+              row.appendChild(remove);
+              optionsBox.appendChild(row);
+            });
+            const add = document.createElement('button');
+            add.type = 'button';
+            add.className = 'secondary small';
+            add.textContent = '+ 添加选项';
+            add.addEventListener('click', () => {
+              editing.content.options.push({
+                key: nextOptionKey(editing.content.options),
+                label: ''
+              });
+              renderContentFields();
+            });
+            optionsBox.appendChild(add);
+          }
+
+          const constraintWrap = document.createElement('div');
+          constraintWrap.className = 'grid-3';
+          const field = (labelText, value, onChange, placeholder) => {
+            const label = document.createElement('label');
+            label.className = 'field small';
+            label.textContent = labelText;
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.value = value == null ? '' : value;
+            input.placeholder = placeholder || '';
+            input.addEventListener('input', () => onChange(input.value));
+            label.appendChild(input);
+            return label;
+          };
+          if (editing.content.type === 'multi') {
+            constraintWrap.appendChild(field('最少选择数量', editing.content.minSelect, (v) => {
+              editing.content.minSelect = nullableInt(v);
+            }, '不限制'));
+            constraintWrap.appendChild(field('最多选择数量', editing.content.maxSelect, (v) => {
+              editing.content.maxSelect = nullableInt(v);
+            }, '不限制'));
+          } else if (editing.content.type === 'text') {
+            constraintWrap.appendChild(field('最少字数', editing.content.minLength, (v) => {
+              editing.content.minLength = nullableInt(v);
+            }, '不限制'));
+            constraintWrap.appendChild(field('最多字数', editing.content.maxLength, (v) => {
+              editing.content.maxLength = nullableInt(v);
+            }, '不限制'));
+          } else if (editing.content.type === 'number') {
+            constraintWrap.appendChild(field('最小值', editing.content.min, (v) => {
+              editing.content.min = nullableNumber(v);
+            }, '不限制'));
+            constraintWrap.appendChild(field('最大值', editing.content.max, (v) => {
+              editing.content.max = nullableNumber(v);
+            }, '不限制'));
+            const label = document.createElement('label');
+            label.className = 'choice small';
+            label.style.alignSelf = 'end';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = editing.content.integerOnly;
+            cb.addEventListener('change', () => { editing.content.integerOnly = cb.checked; });
+            label.appendChild(cb);
+            label.appendChild(document.createTextNode(' 只允许整数'));
+            constraintWrap.appendChild(label);
+          }
+          constraintsBox.appendChild(constraintWrap);
+        }
+
+        typeSelect.addEventListener('change', () => {
+          editing.content.type = typeSelect.value;
+          editing.content.options = (typeSelect.value === 'single' || typeSelect.value === 'multi')
+            ? (editing.content.options.length >= 2
+              ? editing.content.options
+              : [{ key: 'A', label: '' }, { key: 'B', label: '' }])
+            : [];
+          renderContentFields();
+        });
+        titleInput.addEventListener('input', () => { editing.content.title = titleInput.value; });
+        renderContentFields();
+
+        showModal(q ? '编辑题目' : '新建题目', wrap, [
+          { label: '取消', handler: closeModal },
+          {
+            label: q ? '保存为新版本' : '创建题目',
+            primary: true,
+            handler: async () => {
+              const title = titleInput.value.trim();
+              if (!title) { toast('请填写题目内容'); return; }
+              if (!editing.bankId && !q) { toast('请选择题库'); return; }
+              const note = wrap.querySelector('#editNote').value.trim();
+              const body = {
+                title,
+                type: editing.content.type,
+                options: editing.content.options.map((o) => ({ key: o.key, label: o.label })),
+                minSelect: editing.content.minSelect,
+                maxSelect: editing.content.maxSelect,
+                minLength: editing.content.minLength,
+                maxLength: editing.content.maxLength,
+                min: editing.content.min,
+                max: editing.content.max,
+                integerOnly: editing.content.integerOnly,
+                changeNote: note
+              };
+              try {
+                if (q) {
+                  await api('/api/questions/' + encodeURIComponent(q.id), {
+                    method: 'PUT', body
+                  });
+                  toast('已保存为新版本');
+                } else {
+                  body.bankId = bankSelect.value || editing.bankId;
+                  await api('/api/questions', { method: 'POST', body });
+                  toast('题目已创建');
+                }
+                closeModal();
+                await loadBanks();
+                await loadQuestions();
+              } catch (err) { showError(err); }
+            }
+          }
+        ]);
+      }
+
+      function nextOptionKey(options) {
+        const used = new Set(options.map((o) => o.key));
+        for (let i = 0; i < 26; i += 1) {
+          const key = String.fromCharCode(65 + i);
+          if (!used.has(key)) return key;
+        }
+        return 'O' + (options.length + 1);
+      }
+
+      function nullableInt(value) {
+        if (value === '' || value == null) return null;
+        const n = Number(value);
+        return Number.isInteger(n) ? n : null;
+      }
+
+      function nullableNumber(value) {
+        if (value === '' || value == null) return null;
+        const n = Number(value);
+        return Number.isFinite(n) ? n : null;
+      }
+
+      // ---------- 预览 / 历史 ----------
+      async function openPreview(q) {
+        try {
+          const detail = await api('/api/questions/' + encodeURIComponent(q.id));
+          showModal('题目预览', previewNode(detail), [{ label: '关闭', handler: closeModal }]);
+        } catch (err) { showError(err); }
+      }
+
+      function previewNode(detail) {
+        const v = detail.version;
+        const wrap = document.createElement('div');
+        wrap.className = 'stack';
+        wrap.innerHTML = `
+          <div><span class="badge">${escapeHtml(TYPE_LABEL[v.type] || v.type)}</span>
+            <span class="badge published">v${v.version}</span></div>
+          <h3 style="margin:0">${escapeHtml(v.title)}</h3>
+          <div class="question-preview" style="white-space:pre-wrap;color:#374151">${escapeHtml(versionSummary(v))}</div>
+          <p class="small muted">${escapeHtml(v.changeNote || '')}</p>
+          ${detail.forkOrigin ? '<p class="small muted">另存自：' +
+            escapeHtml(detail.forkOrigin.title) +
+            (detail.forkOrigin.version ? ' v' + detail.forkOrigin.version : '') + '</p>' : ''}
+        `;
+        return wrap;
+      }
+
+      async function openHistory(q) {
+        try {
+          const data = await api('/api/questions/' + encodeURIComponent(q.id) + '/versions');
+          const wrap = document.createElement('div');
+          wrap.className = 'stack';
+          data.items.slice().reverse().forEach((v) => {
+            const card = document.createElement('div');
+            card.className = 'version-item';
+            card.innerHTML = `
+              <div class="row between">
+                <b>v${v.version} ${escapeHtml(v.title)}</b>
+                <span class="small muted">${formatDate(v.createdAt)}</span>
+              </div>
+              <div class="small muted">${escapeHtml(v.changeNote || '无版本说明')}</div>
+              ${v.parentVersion ? '<div class="small muted">父版本：v' + v.parentVersion + '</div>' : ''}
+              ${v.restoredFromVersion ? '<div class="small muted">恢复自版本：v' + v.restoredFromVersion + '</div>' : ''}
+            `;
+            const actions = document.createElement('div');
+            actions.className = 'row';
+            actions.appendChild(button('查看内容', () => {
+              showModal('版本 v' + v.version, previewNode({ version: v }), [
+                { label: '关闭', handler: closeModal }
+              ]);
+            }, 'secondary small'));
+            if (q.isOwner && v.version !== data.currentVersion) {
+              actions.appendChild(button('恢复此版本', async () => {
+                if (!confirm('将基于 v' + v.version + ' 生成一个新版本，旧版本不会被删除。继续？')) return;
+                try {
+                  await api('/api/questions/' + encodeURIComponent(q.id) + '/restore', {
+                    method: 'POST',
+                    body: { version: v.version, changeNote: '恢复自 v' + v.version }
+                  });
+                  toast('已恢复为新版本');
+                  closeModal();
+                  await loadQuestions();
+                } catch (err) { showError(err); }
+              }, 'small'));
+            }
+            card.appendChild(actions);
+            wrap.appendChild(card);
+          });
+          showModal('版本历史：' + q.title, wrap, [{ label: '关闭', handler: closeModal }]);
+        } catch (err) { showError(err); }
+      }
+
+      // ---------- 共享 ----------
+      async function openShare(q) {
+        try {
+          const shares = await api('/api/questions/' + encodeURIComponent(q.id) + '/shares');
+          const wrap = document.createElement('div');
+          wrap.className = 'stack';
+          const form = document.createElement('div');
+          form.className = 'row';
+          form.innerHTML = '<input id="shareUsername" type="text" placeholder="对方用户名" style="margin:0;flex:1">';
+          const add = button('共享', async () => {
+            const username = form.querySelector('#shareUsername').value.trim();
+            if (!username) { toast('请输入用户名'); return; }
+            try {
+              await api('/api/questions/' + encodeURIComponent(q.id) + '/share', {
+                method: 'POST', body: { username }
+              });
+              toast('已共享');
+              closeModal();
+              openShare(q);
+            } catch (err) { showError(err); }
+          }, 'small');
+          form.appendChild(add);
+          wrap.appendChild(form);
+
+          if (shares.length === 0) {
+            const p = document.createElement('p');
+            p.className = 'muted';
+            p.textContent = '还没有共享给任何人。';
+            wrap.appendChild(p);
+          }
+          shares.forEach((s) => {
+            const row = document.createElement('div');
+            row.className = 'version-item row between';
+            row.innerHTML = '<span>' + escapeHtml(s.user.username) + '</span>';
+            row.appendChild(button('取消共享', async () => {
+              try {
+                await api('/api/questions/' + encodeURIComponent(q.id) +
+                  '/shares/' + encodeURIComponent(s.user.id), { method: 'DELETE' });
+                toast('已取消共享');
+                closeModal();
+                openShare(q);
+              } catch (err) { showError(err); }
+            }, 'danger small'));
+            wrap.appendChild(row);
+          });
+          showModal('共享题目：' + q.title, wrap, [{ label: '关闭', handler: closeModal }]);
+        } catch (err) { showError(err); }
+      }
+
+      // ---------- 使用情况 ----------
+      async function openUsage(q) {
+        try {
+          const data = await api('/api/questions/' + encodeURIComponent(q.id) + '/usage');
+          const wrap = document.createElement('div');
+          wrap.className = 'stack';
+          const summary = document.createElement('p');
+          summary.className = 'muted';
+          summary.textContent = '共被 ' + data.totalSurveys + ' 份问卷使用。';
+          wrap.appendChild(summary);
+          data.items.forEach((s) => {
+            const item = document.createElement('div');
+            item.className = 'version-item';
+            item.innerHTML = `
+              <div class="row between">
+                <b>${escapeHtml(s.title)}</b>
+                <span class="badge ${escapeHtml(s.status)}">${escapeHtml(statusLabel(s.status))}</span>
+              </div>
+              <div class="small muted">
+                ${s.questions.map((x) => 'qid ' + escapeHtml(x.qid) + ' / v' + x.version).join('；')}
+              </div>
+            `;
+            wrap.appendChild(item);
+          });
+          showModal('使用情况：' + q.title, wrap, [{ label: '关闭', handler: closeModal }]);
+        } catch (err) { showError(err); }
+      }
+
+      async function forkQuestion(q) {
+        if (!confirm('将把这道题另存到你自己的题库（v1），之后可独立修改。继续？')) return;
+        try {
+          await api('/api/questions/' + encodeURIComponent(q.id) + '/fork', {
+            method: 'POST', body: {}
+          });
+          toast('已另存到你的题库');
+          setScope('mine');
+          await loadBanks();
+          await loadQuestions();
+        } catch (err) { showError(err); }
+      }
+
+      // ---------- 新建题库 ----------
+      document.getElementById('newBankBtn').addEventListener('click', () => {
+        const wrap = document.createElement('div');
+        wrap.className = 'stack';
+        wrap.innerHTML = `
+          <label class="field">题库名称
+            <input id="bankName" type="text" maxlength="60" placeholder="例如：课程常用题">
+          </label>
+          <label class="field">说明
+            <textarea id="bankDesc" maxlength="500"></textarea>
+          </label>
+        `;
+        showModal('新建题库', wrap, [
+          { label: '取消', handler: closeModal },
+          {
+            label: '创建',
+            primary: true,
+            handler: async () => {
+              const name = wrap.querySelector('#bankName').value.trim();
+              if (!name) { toast('请填写题库名称'); return; }
+              try {
+                await api('/api/banks', {
+                  method: 'POST',
+                  body: { name, description: wrap.querySelector('#bankDesc').value }
+                });
+                closeModal();
+                await loadBanks();
+                toast('题库已创建');
+              } catch (err) { showError(err); }
+            }
+          }
+        ]);
+      });
+
+      // ---------- 事件绑定 ----------
+      document.getElementById('newQuestionBtn').addEventListener('click', () => openEditor(null));
+      document.getElementById('emptyCreateBtn').addEventListener('click', () => openEditor(null));
+      document.getElementById('logoutBtn').addEventListener('click', logout);
+      els.scopeTabs.addEventListener('click', (event) => {
+        const b = event.target.closest('button[data-scope]');
+        if (!b) return;
+        setScope(b.dataset.scope);
+        loadQuestions();
+      });
+      els.search.addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(loadQuestions, 250);
+      });
+
+      loadMe();
+      (async () => {
+        try {
+          await loadBanks();
+          await loadQuestions();
+        } catch (err) { showError(err); }
+      })();
+    })();
+  </script>
+</body>
+</html>
